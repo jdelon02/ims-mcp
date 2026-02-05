@@ -32,7 +32,7 @@ From the `ims-mcp` directory:
 
 ```bash
 python3 -m venv .venv
-. .venv/bin/activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -61,7 +61,7 @@ export IMS_CLIENT_NAME="ims-mcp"
 With the venv activated and `IMS_BASE_URL` set:
 
 ```bash
-. .venv/bin/activate
+source .venv/bin/activate
 export IMS_BASE_URL="http://localhost:8000"  # or your IMS URL
 python server.py
 ```
