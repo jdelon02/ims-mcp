@@ -21,6 +21,50 @@ from typing import Any, Dict, List, Optional
 from mcp.server.mcpserver import MCPServer
 
 # ---------------------------------------------------------------------------
+# Environment loading (.env support)
+# ---------------------------------------------------------------------------
+
+
+def _load_env_from_file() -> None:
+    """Load environment variables from a local .env-style file, if present.
+
+    This is a minimal implementation to support local development without
+    adding extra dependencies. Lines should be of the form KEY=VALUE.
+    Existing environment variables are not overwritten.
+    """
+
+    # Allow override of the env file name/path via IMS_ENV_FILE; otherwise
+    # default to ".env" in the same directory as this server.py file.
+    env_setting = os.getenv("IMS_ENV_FILE", ".env")
+    env_path = Path(env_setting)
+    if not env_path.is_absolute():
+        env_path = Path(__file__).resolve().parent / env_path
+
+    if not env_path.exists():
+        return
+
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except Exception:
+        # Fail open: if the .env file is malformed or unreadable, just ignore
+        # it and rely on the existing environment.
+        pass
+
+
+# Load .env before we compute any IMS configuration.
+_load_env_from_file()
+
+# ---------------------------------------------------------------------------
 # IMS client wiring
 # ---------------------------------------------------------------------------
 

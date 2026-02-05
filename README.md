@@ -40,15 +40,39 @@ This installs the official MCP Python SDK (`mcp[cli]`).
 
 ## Configuration
 
-The MCP server talks to IMS via environment variables:
+The MCP server talks to IMS via environment variables. These can be provided
+in three ways (in order of **increasing** precedence):
+
+1. A local `.env` file in the project root (or a path specified by
+   `IMS_ENV_FILE`)
+2. The process environment (e.g. exported variables in your shell)
+3. Environment variables set by the MCP host (e.g. mcphub `env` block)
+
+Supported variables:
 
 - `IMS_BASE_URL` (required)
   - Base URL of the IMS HTTP service, e.g. `http://localhost:8000` or
     `https://ims.delongpa.com`.
 - `IMS_HTTP_TIMEOUT` (optional, default `5.0` seconds)
 - `IMS_CLIENT_NAME` (optional, default `"ims-mcp"`)
+- `IMS_ENV_FILE` (optional, default `.env`)
+  - If set, points to a `.env`-style file to load before reading other vars.
 
-Example:
+### Using a .env file (local development)
+
+Create a file named `.env` next to `server.py`:
+
+```env
+IMS_BASE_URL=http://localhost:8000
+IMS_HTTP_TIMEOUT=5.0
+IMS_CLIENT_NAME=ims-mcp
+```
+
+You can override the file name/path with `IMS_ENV_FILE` if needed.
+
+### Setting variables directly
+
+Example using exported variables:
 
 ```bash
 export IMS_BASE_URL="http://ims.delongpa.com"
