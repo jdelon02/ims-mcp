@@ -1,0 +1,71 @@
+{
+  "name": "ims.memory-core",
+  "description": "IMS long-term project memory tools for decisions, issues, and key facts.",
+  "tools": [
+    {
+      "name": "store_memory",
+      "description": "Store a long-term memory item for a project via /memories/store.",
+      "input_schema": {
+        "type": "object",
+        "required": ["project_id", "text", "kind"],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "IMS project identifier (slug)."
+          },
+          "text": {
+            "type": "string",
+            "description": "Full text/body of the memory (decision, issue, note, fact)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "High-level memory kind, e.g. 'decision', 'issue', 'note', 'fact'."
+          },
+          "tags": {
+            "type": "array",
+            "description": "Optional tags for filtering and organization.",
+            "items": {"type": "string"}
+          },
+          "importance": {
+            "type": "number",
+            "description": "Optional importance score (0-1 or similar)."
+          }
+        }
+      }
+    },
+    {
+      "name": "find_memories",
+      "description": "Search long-term memories for a project via /memories/search.",
+      "input_schema": {
+        "type": "object",
+        "required": ["project_id", "query"],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "IMS project identifier (slug)."
+          },
+          "query": {
+            "type": "string",
+            "description": "Natural language query to search memory text."
+          },
+          "kinds": {
+            "type": "array",
+            "description": "Optional list of kinds to filter by (decision/issue/note/fact). Currently advisory only.",
+            "items": {"type": "string"}
+          },
+          "tags": {
+            "type": "array",
+            "description": "Optional tags to filter by. Currently advisory only.",
+            "items": {"type": "string"}
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of results to return (default 10).",
+            "default": 10,
+            "minimum": 1
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "name": "ims.context-rag",
+  "description": "IMS context retrieval tools for unified project context (code, docs, long-term memories)",
+  "tools": [
+    {
+      "name": "context_search",
+      "description": "Search across project context (code, docs, IMS memories) and return ranked snippets.",
+      "input_schema": {
+        "type": "object",
+        "required": ["project_id", "query"],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "IMS project identifier (slug)."
+          },
+          "query": {
+            "type": "string",
+            "description": "Natural language query describing what context is needed."
+          },
+          "sources": {
+            "type": "array",
+            "description": "Optional list of source types to search, e.g. ['code','docs','memories']. Defaults to all when omitted.",
+            "items": {"type": "string"}
+          },
+          "per_source_limits": {
+            "type": "object",
+            "description": "Optional per-source limits, e.g. { 'code': 5, 'docs': 5, 'memories': 5 }.",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  ]
+}

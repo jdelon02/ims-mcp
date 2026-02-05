@@ -1,0 +1,80 @@
+{
+  "name": "ims.session-memory",
+  "description": "IMS session state tools for managing (project_id, user_id, agent_id, task_id) sessions.",
+  "tools": [
+    {
+      "name": "auto_session",
+      "description": "Primary entry point. Given a project and user message, either resume an open session or create a new one.",
+      "input_schema": {
+        "type": "object",
+        "required": ["project_id", "user_message"],
+        "properties": {
+          "project_id": {"type": "string"},
+          "user_message": {"type": "string"},
+          "user_id": {"type": "string", "description": "Logical user identifier."},
+          "agent_id": {"type": "string", "description": "Agent role identifier (planner, implementer, debugger, etc.)."}
+        }
+      }
+    },
+    {
+      "name": "continue_session",
+      "description": "Resolve or create a concrete session for a specific (project_id,user_id,agent_id,task_id) tuple.",
+      "input_schema": {
+        "type": "object",
+        "required": ["project_id"],
+        "properties": {
+          "project_id": {"type": "string"},
+          "user_id": {"type": "string"},
+          "agent_id": {"type": "string"},
+          "task_id": {"type": "string"},
+          "initial_state": {
+            "type": "object",
+            "description": "Optional initial SessionState payload to seed a new session."
+          }
+        }
+      }
+    },
+    {
+      "name": "wrap_session",
+      "description": "Persist an updated SessionState snapshot for a given session tuple (pause/hand-off/finish).",
+      "input_schema": {
+        "type": "object",
+        "required": ["project_id", "state"],
+        "properties": {
+          "project_id": {"type": "string"},
+          "user_id": {"type": "string"},
+          "agent_id": {"type": "string"},
+          "task_id": {"type": "string"},
+          "state": {
+            "type": "object",
+            "description": "Complete SessionState to persist (including session_id and identity fields)."
+          }
+        }
+      }
+    },
+    {
+      "name": "list_open_sessions",
+      "description": "List open sessions for a given (project_id,user_id) pair.",
+      "input_schema": {
+        "type": "object",
+        "required": ["project_id"],
+        "properties": {
+          "project_id": {"type": "string"},
+          "user_id": {"type": "string"},
+          "only_open": {"type": "boolean", "default": true}
+        }
+      }
+    },
+    {
+      "name": "resume_session",
+      "description": "Explicitly resume a session by session_id.",
+      "input_schema": {
+        "type": "object",
+        "required": ["session_id"],
+        "properties": {
+          "session_id": {"type": "string"}
+        }
+      }
+    }
+  ]
+}
