@@ -114,8 +114,12 @@ The MCP server exposes the following tools for interacting with IMS capabilities
 
 ### Docs Indexing (Meilisearch)
 - `docs_index_directory`
-  - Index a directory of `.md`/`.txt` (etc.) into Meilisearch `project_docs` (chunked by default)
+  - Index a directory of *text* files (docs + code + config) into Meilisearch `project_docs` (chunked by default)
   - Uses `IMS_MEILI_URL` / `IMS_MEILI_API_KEY` and stores `user_id` (from `IMS_USER_ID` or OS username)
+  - Supports optional path-based filtering:
+    - `include_globs`: only include files matching at least one glob (e.g. `**/*-meta.xml` for Salesforce metadata)
+    - `exclude_globs`: exclude files matching any glob
+    - `no_default_excludes`: disable built-in excludes (e.g. `.env*`, lockfiles, `*.min.js`)
 
 ### Long-Term Memory
 - `ims.memory-core.store_memory`

@@ -12,6 +12,7 @@ Environment variables:
 
 from __future__ import annotations
 
+import fnmatch
 import getpass
 import hashlib
 import os
@@ -26,6 +27,7 @@ import httpx
 DEFAULT_INDEX_UID = "project_docs"
 
 DEFAULT_EXTS: set[str] = {
+    # Docs / notes
     ".md",
     ".markdown",
     ".mdx",
@@ -33,7 +35,68 @@ DEFAULT_EXTS: set[str] = {
     ".rst",
     ".adoc",
     ".org",
+
+    # Common code / scripts
+    ".py",
+    ".pyi",
+    ".php",
+    ".phtml",
+    ".inc",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".html",
+    ".css",
+    ".scss",
+    ".sql",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+
+    # DevOps / IaC / config (text)
+    ".yml",
+    ".yaml",
+    ".json",
+    ".toml",
+    ".ini",
+    ".conf",
+    ".tf",
+    ".tfvars",
+
+    # Salesforce / Apex
+    ".cls",
+    ".trigger",
+    ".page",
+    ".component",
+    ".cmp",
+    ".app",
+    ".evt",
+    ".auradoc",
+    ".design",
 }
+
+DEFAULT_EXCLUDE_GLOBS: list[str] = [
+    # Secrets / key material
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    "**/*.pem",
+    "**/*.key",
+    "**/*.p12",
+    "**/*.pfx",
+
+    # Low-signal / large artifacts
+    "**/*.min.js",
+    "**/*.map",
+    "**/package-lock.json",
+    "**/yarn.lock",
+    "**/pnpm-lock.yaml",
+    "**/poetry.lock",
+    "**/composer.lock",
+]
 
 DEFAULT_PRUNE_DIRS: set[str] = {
     ".git",
@@ -278,13 +341,39 @@ def _chunk_markdown(text: str, max_chars: int) -> List[Tuple[str, str]]:
     return chunks
 
 
-def _walk_files(root: Path, *, prune_dirs: set[str]) -> Iterable[Path]:
+def _matches_any_glob(path: str, globs: Sequence[str]) -> bool:
+    for pat in globs:
+        if fnmatch.fnmatch(path, pat):
+            return True
+    return False
+
+
+def _walk_files(
+    root: Path,
+    *,
+    prune_dirs: set[str],
+    include_globs: Sequence[str],
+    exclude_globs: Sequence[str],
+) -> Iterable[Path]:
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in prune_dirs and not d.startswith(".")]
         for name in filenames:
             if name.startswith("."):
                 continue
-            yield Path(dirpath) / name
+
+            p = Path(dirpath) / name
+            try:
+                rel = p.relative_to(root).as_posix()
+            except ValueError:
+                rel = p.as_posix()
+
+            if exclude_globs and _matches_any_glob(rel, exclude_globs):
+                continue
+
+            if include_globs and not _matches_any_glob(rel, include_globs):
+                continue
+
+            yield p
 
 
 def collect_docs(
@@ -295,6 +384,8 @@ def collect_docs(
     exts: set[str],
     max_bytes: int,
     prune_dirs: set[str],
+    include_globs: Sequence[str],
+    exclude_globs: Sequence[str],
     chunking: bool,
     chunk_max_chars: int,
     snippet_chars: int,
@@ -309,7 +400,12 @@ def collect_docs(
         "skipped_read": 0,
     }
 
-    for path in _walk_files(root, prune_dirs=prune_dirs):
+    for path in _walk_files(
+        root,
+        prune_dirs=prune_dirs,
+        include_globs=include_globs,
+        exclude_globs=exclude_globs,
+    ):
         stats["seen"] += 1
 
         ext = path.suffix.lower()
@@ -438,6 +534,9 @@ def index_directory_docs(
     exts: Optional[Sequence[str]] = None,
     max_bytes: int = DEFAULT_MAX_BYTES,
     prune_dirs: Optional[Sequence[str]] = None,
+    include_globs: Optional[Sequence[str]] = None,
+    exclude_globs: Optional[Sequence[str]] = None,
+    no_default_excludes: bool = False,
     chunking: bool = True,
     chunk_max_chars: int = DEFAULT_CHUNK_MAX_CHARS,
     snippet_chars: int = DEFAULT_SNIPPET_CHARS,
@@ -460,6 +559,11 @@ def index_directory_docs(
     )
     prune = set(DEFAULT_PRUNE_DIRS) if prune_dirs is None else set(prune_dirs)
 
+    include = [] if include_globs is None else list(include_globs)
+    user_excludes = [] if exclude_globs is None else list(exclude_globs)
+    exclude = [] if no_default_excludes else list(DEFAULT_EXCLUDE_GLOBS)
+    exclude.extend(user_excludes)
+
     t0 = time.time()
     records, stats = collect_docs(
         root=root,
@@ -468,6 +572,8 @@ def index_directory_docs(
         exts=ext_set,
         max_bytes=max_bytes,
         prune_dirs=prune,
+        include_globs=include,
+        exclude_globs=exclude,
         chunking=chunking,
         chunk_max_chars=chunk_max_chars,
         snippet_chars=snippet_chars,
@@ -488,6 +594,9 @@ def index_directory_docs(
         "chunk_max_chars": int(chunk_max_chars),
         "snippet_chars": int(snippet_chars),
         "exts": sorted(ext_set),
+        "include_globs": include,
+        "exclude_globs": exclude,
+        "no_default_excludes": bool(no_default_excludes),
         "stats": stats,
         "dry_run": bool(dry_run),
         "elapsed_seconds": round(dt, 3),

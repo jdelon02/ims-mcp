@@ -38,6 +38,21 @@
             "type": ["array", "null"],
             "items": {"type": "string"}
           },
+          "include_globs": {
+            "type": ["array", "null"],
+            "items": {"type": "string"},
+            "description": "Only include files whose relative path matches at least one glob (repeatable)."
+          },
+          "exclude_globs": {
+            "type": ["array", "null"],
+            "items": {"type": "string"},
+            "description": "Exclude files whose relative path matches any glob (repeatable)."
+          },
+          "no_default_excludes": {
+            "type": "boolean",
+            "default": false,
+            "description": "Disable built-in exclude globs (e.g. .env*, lockfiles, *.min.js, etc.)."
+          },
           "chunking": {
             "type": "boolean",
             "default": true
