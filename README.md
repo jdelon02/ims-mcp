@@ -13,18 +13,9 @@ context-rag) and makes those capabilities available to MCP-aware clients
 - An IMS backend running somewhere reachable (FastAPI/Uvicorn service), e.g.:
   - `http://localhost:8000`, or
   - `http://ims.delongpa.com`
-- The `integrated-memory-system` repo checked out on disk in this layout
-  (relative to this project):
 
-```text
-<some-parent-dir>/
-  skills/
-    integrated-memory-system/   # IMS FastAPI project (provides IMSClient)
-  ims-mcp/                      # this repo
-```
-
-`server.py` imports `IMSClient` from `skills/integrated-memory-system/app/ims_client.py`
-using a relative path; if your layout is different, adjust `server.py` accordingly.
+That's it! The MCP server includes all necessary client code to communicate
+with the IMS backend.
 
 ## Installation (venv + pip)
 
@@ -36,7 +27,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-This installs the official MCP Python SDK (`mcp[cli]`).
+This installs the MCP Python SDK and required dependencies (httpx).
 
 ## Configuration
 
@@ -115,26 +106,29 @@ Adjust paths and `IMS_BASE_URL` to match your environment.
 
 ## Exposed tools
 
-The MCP server exposes the following tools (namespaces follow the IMS
-service names):
+The MCP server exposes the following tools for interacting with IMS capabilities:
 
+### Context Retrieval
 - `ims.context-rag.context_search`
-  - Wrapper over `POST /context/search`.
-- `ims.memory-core.store_memory`
-  - Wrapper over `POST /memories/store`.
-- `ims.memory-core.find_memories`
-  - Wrapper over `POST /memories/search`.
-- `ims.session-memory.auto_session`
-  - Wrapper over `POST /sessions/auto`.
-- `ims.session-memory.continue_session`
-  - Wrapper over `POST /sessions/continue`.
-- `ims.session-memory.wrap_session`
-  - Wrapper over `POST /sessions/wrap`.
-- `ims.session-memory.list_open_sessions`
-  - Wrapper over `POST /sessions/list_open`.
-- `ims.session-memory.resume_session`
-  - Wrapper over `POST /sessions/resume`.
+  - Unified search across code, docs, and memories
 
-For detailed behavior of these endpoints, see `spec/API_ENDPOINTS.md` in the
-`integrated-memory-system` repo and `AGENTS.md` in this repo for the IMS
-agent protocol.
+### Long-Term Memory
+- `ims.memory-core.store_memory`
+  - Store decisions, issues, and facts
+- `ims.memory-core.find_memories`
+  - Search stored memories
+
+### Session State
+- `ims.session-memory.auto_session`
+  - Smart helper to resume or create sessions
+- `ims.session-memory.continue_session`
+  - Resolve or create session by (project, user, agent, task) tuple
+- `ims.session-memory.wrap_session`
+  - Persist updated session state
+- `ims.session-memory.list_open_sessions`
+  - List available sessions
+- `ims.session-memory.resume_session`
+  - Resume specific session by ID
+
+Each tool includes comprehensive documentation in its docstring. For the complete
+IMS protocol and usage guidelines, see `AGENTS.md`.

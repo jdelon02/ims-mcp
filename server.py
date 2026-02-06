@@ -1,14 +1,19 @@
 """MCP server for the Integrated Memory System (IMS).
 
-This uses the official Model Context Protocol Python SDK
-(https://github.com/modelcontextprotocol/python-sdk) and delegates all
-operations to the IMS HTTP backend via `IMSClient` from the
-integrated-memory-system project.
+This server exposes IMS capabilities (memory-core, session-memory, context-rag)
+as MCP tools, allowing MCP-aware agents to interact with the IMS backend without
+needing to know about HTTP APIs.
 
-Initially we expose three tool groups:
-- ims.context-rag   → /context/search
-- ims.session-memory → /sessions/*
-- ims.memory-core   → /memories/*
+The server uses the official Model Context Protocol Python SDK
+(https://github.com/modelcontextprotocol/python-sdk) and communicates with the
+IMS backend via the included IMSClient.
+
+Tool groups:
+- ims.context-rag.*    → Unified search across code, docs, and memories
+- ims.memory-core.*    → Long-term memory storage and retrieval
+- ims.session-memory.* → Session state tracking and management
+
+For usage guidelines and the complete IMS protocol, see AGENTS.md.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server import FastMCP
 
 # ---------------------------------------------------------------------------
 # Environment loading (.env support)
@@ -68,28 +73,7 @@ _load_env_from_file()
 # IMS client wiring
 # ---------------------------------------------------------------------------
 
-# Allow importing IMSClient from the integrated-memory-system project without
-# requiring it to be installed as a package. We assume the repo is checked out
-# alongside this ims-mcp project under ../skills/integrated-memory-system.
-_IMS_ROOT = (
-    Path(__file__)
-    .resolve()
-    .parent
-    .parent
-    / "skills"
-    / "integrated-memory-system"
-)
-if _IMS_ROOT.exists() and str(_IMS_ROOT) not in sys.path:
-    sys.path.insert(0, str(_IMS_ROOT))
-
-try:  # type: ignore[import]
-    from app.ims_client import IMSClient
-except Exception as exc:  # pragma: no cover - environment specific
-    raise RuntimeError(
-        "Failed to import IMSClient from integrated-memory-system. "
-        "Ensure the IMS repo is checked out at ../skills/integrated-memory-system "
-        "relative to this ims-mcp project."
-    ) from exc
+from app.ims_client import IMSClient
 
 
 def _ims_client() -> IMSClient:
@@ -102,18 +86,19 @@ def _ims_client() -> IMSClient:
     base_url = os.getenv("IMS_BASE_URL", "http://localhost:8000").rstrip("/")
     timeout = float(os.getenv("IMS_HTTP_TIMEOUT", "5.0"))
     client_name = os.getenv("IMS_CLIENT_NAME", "ims-mcp")
-    return IMSClient(base_url=base_url, timeout=timeout, client_name=client_name)
+    verify_ssl = os.getenv("IMS_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
+    return IMSClient(base_url=base_url, timeout=timeout, client_name=client_name, verify_ssl=verify_ssl)
 
 
 # This name is what MCP clients will see.
-mcp = MCPServer("IMS MCP")
+mcp = FastMCP("IMS MCP")
 
 
 # ---------------------------------------------------------------------------
 # ims.context-rag tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool("ims.context-rag.context_search")
+@mcp.tool("context_rag_context_search")
 def ims_context_search(
     project_id: str,
     query: str,
@@ -122,7 +107,30 @@ def ims_context_search(
 ) -> Dict[str, Any]:
     """Unified context search across code, docs, and memories for a project.
 
-    This is a thin wrapper over the IMS `/context/search` endpoint.
+    Use this as the PRIMARY way to gather context before answering questions or
+    starting work. Returns ContextHit objects with snippets and metadata.
+
+    Args:
+        project_id: Project identifier (typically basename of working directory)
+        query: Natural-language description of what you're looking for
+        sources: List of sources to search. Options: "code", "docs", "memories".
+                 Include at least "memories" and relevant others.
+        per_source_limits: Dict mapping source names to max results per source.
+                          Example: {"code": 5, "docs": 5, "memories": 5}
+
+    Returns:
+        Dict with "results" key containing list of ContextHit objects, each with:
+        - snippet: The actual text/code snippet
+        - source: Which source it came from (code/docs/memories)
+        - metadata: Additional context (file path, memory kind/tags, etc.)
+
+    Example:
+        results = ims_context_search(
+            project_id="my-project",
+            query="How is authentication implemented?",
+            sources=["code", "memories"],
+            per_source_limits={"code": 5, "memories": 5}
+        )
     """
 
     ims = _ims_client()
@@ -138,7 +146,7 @@ def ims_context_search(
 # ims.memory-core tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool("ims.memory-core.store_memory")
+@mcp.tool("memory_core_store_memory")
 def ims_store_memory(
     project_id: str,
     text: str,
@@ -146,7 +154,41 @@ def ims_store_memory(
     tags: Optional[List[str]] = None,
     importance: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Store a long-term memory item for a project via /memories/store."""
+    """Store a long-term memory for a project (decisions, issues, facts).
+
+    Use this to persist important information that should be remembered across
+    sessions and referenced later.
+
+    Args:
+        project_id: Project identifier
+        text: Memory content - be clear and specific
+        kind: Memory type. Use:
+              - "decision": Architecture, data model, tooling choices
+              - "issue": Bug fixes (symptoms, root cause, solution)
+              - "fact": Stable config (ports, URLs, feature flags)
+        tags: Optional categorization tags (e.g., ["auth", "backend"])
+        importance: Optional 0.0-1.0 score for memory significance
+
+    Returns:
+        Dict with stored memory metadata including memory_id
+
+    Examples:
+        # Store architecture decision
+        ims_store_memory(
+            project_id="my-app",
+            text="We use Redis for session storage, keyed by project/user/agent/task",
+            kind="decision",
+            tags=["architecture", "sessions"]
+        )
+
+        # Store bug fix
+        ims_store_memory(
+            project_id="my-app",
+            text="MCP import error fixed by using FastMCP instead of Server class",
+            kind="issue",
+            tags=["mcp", "sdk-upgrade"]
+        )
+    """
 
     ims = _ims_client()
     return ims.memory_core.store_memory(
@@ -158,7 +200,7 @@ def ims_store_memory(
     )
 
 
-@mcp.tool("ims.memory-core.find_memories")
+@mcp.tool("memory_core_find_memories")
 def ims_find_memories(
     project_id: str,
     query: str,
@@ -166,7 +208,36 @@ def ims_find_memories(
     tags: Optional[List[str]] = None,
     limit: int = 10,
 ) -> List[Dict[str, Any]]:
-    """Search long-term memories for a project via /memories/search."""
+    """Search long-term memories (decisions, issues, facts) for a project.
+
+    Use this BEFORE re-deriving solutions to check if the problem has been
+    solved before or if relevant decisions have been made.
+
+    Args:
+        project_id: Project identifier
+        query: Natural-language search query
+        kinds: Optional filter by memory types ("decision", "issue", "fact")
+        tags: Optional filter by tags
+        limit: Maximum number of results (default 10)
+
+    Returns:
+        List of memory dicts, each containing:
+        - memory_id: Unique identifier
+        - text: Memory content
+        - kind: Memory type
+        - tags: Associated tags
+        - importance: Significance score
+        - created_at: Timestamp
+
+    Example:
+        # Look up past auth decisions before implementing new auth
+        memories = ims_find_memories(
+            project_id="my-app",
+            query="authentication implementation",
+            kinds=["decision"],
+            limit=5
+        )
+    """
 
     ims = _ims_client()
     return ims.memory_core.find_memories(
@@ -182,16 +253,34 @@ def ims_find_memories(
 # ims.session-memory tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool("ims.session-memory.auto_session")
+@mcp.tool("session_memory_auto_session")
 def ims_auto_session(
     project_id: str,
     user_message: str,
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """High-level helper to either resume or create a session.
+    """High-level helper to automatically resume or create a session.
 
-    Thin wrapper over `/sessions/auto`.
+    Use this when the user says "let's resume", "pick up where we left off",
+    "keep going", etc. without specifying which task. This tool intelligently
+    determines whether to resume an existing session or create a new one.
+
+    Args:
+        project_id: Project identifier (typically basename($PWD))
+        user_message: The user's actual message/request
+        user_id: Optional user identifier (auto-detected if omitted)
+        agent_id: Optional agent role (e.g., "planner", "implementer")
+
+    Returns:
+        Dict with:
+        - status: "resumed" or "created"
+        - mode: "resume" or "create"
+        - session_id: Unique session identifier
+        - state: SessionState dict with current_phase, current_stage, next_action
+
+    Use continue_session instead if you know the specific (project, user, agent, task)
+    tuple you want to work with.
     """
 
     ims = _ims_client()
@@ -212,7 +301,7 @@ def ims_auto_session(
         return resp.json()
 
 
-@mcp.tool("ims.session-memory.continue_session")
+@mcp.tool("session_memory_continue_session")
 def ims_continue_session(
     project_id: str,
     user_id: Optional[str] = None,
@@ -220,9 +309,35 @@ def ims_continue_session(
     task_id: Optional[str] = None,
     initial_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Resolve or create a concrete session for a tuple.
+    """Resolve or create a session for (project, user, agent, task) tuple.
 
-    Wrapper over `/sessions/continue` via SessionMemoryClient.
+    REQUIRED: Call this at the start of every work session to get the current
+    SessionState. Use the returned next_action to decide what to do.
+
+    Args:
+        project_id: Project identifier (typically basename($PWD))
+        user_id: User identifier (auto-detected from OS user if omitted)
+        agent_id: Agent role (e.g., "planner", "implementer", "debugger")
+        task_id: Task label (e.g., "refactor-auth", "fix-ci", default="default")
+        initial_state: Optional initial SessionState if creating new session
+
+    Returns:
+        Dict with:
+        - status: "resumed" (existing) or "created" (new)
+        - session_id: Unique identifier for this session
+        - state: SessionState dict containing:
+            - current_phase: Current work phase
+            - current_stage: "Implementation", "Verification", or "Debugging"
+            - last_checkpoint: Last git hash or progress marker
+            - next_action: Dict with description, file_path, line_hint
+
+    Example:
+        result = ims_continue_session(
+            project_id="my-app",
+            agent_id="implementer",
+            task_id="add-auth"
+        )
+        next_step = result["state"]["next_action"]["description"]
     """
 
     ims = _ims_client()
@@ -235,7 +350,7 @@ def ims_continue_session(
     )
 
 
-@mcp.tool("ims.session-memory.wrap_session")
+@mcp.tool("session_memory_wrap_session")
 def ims_wrap_session(
     project_id: str,
     state: Dict[str, Any],
@@ -243,7 +358,42 @@ def ims_wrap_session(
     agent_id: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Persist an updated SessionState snapshot via `/sessions/wrap`."""
+    """Persist updated SessionState before pausing, switching tasks, or finishing.
+
+    REQUIRED: Call this before ending work to save progress and set next_action
+    for the next session.
+
+    Args:
+        project_id: Project identifier
+        state: Updated SessionState dict with:
+               - current_phase: Updated phase description
+               - current_stage: "Implementation", "Verification", or "Debugging"
+               - last_checkpoint: New git hash or progress marker
+               - next_action: Dict with concrete next step:
+                   - description: What to do next (be specific)
+                   - file_path: File to work on (if applicable)
+                   - line_hint: Line number (if applicable)
+        user_id: Optional user identifier (uses state.user_id if omitted)
+        agent_id: Optional agent identifier
+        task_id: Optional task identifier
+
+    Returns:
+        Dict with:
+        - status: "wrapped"
+        - session_id: Session identifier
+        - state: Persisted SessionState
+
+    Example:
+        updated_state = current_state.copy()
+        updated_state["current_phase"] = "Phase 3: API Implementation"
+        updated_state["current_stage"] = "Implementation"
+        updated_state["next_action"] = {
+            "description": "Implement POST /api/auth/login endpoint",
+            "file_path": "src/routes/auth.ts",
+            "line_hint": 45
+        }
+        ims_wrap_session(project_id="my-app", state=updated_state)
+    """
 
     ims = _ims_client()
     return ims.session_memory.wrap_session(
@@ -255,15 +405,33 @@ def ims_wrap_session(
     )
 
 
-@mcp.tool("ims.session-memory.list_open_sessions")
+@mcp.tool("session_memory_list_open_sessions")
 def ims_list_open_sessions(
     project_id: str,
     user_id: Optional[str] = None,
     only_open: bool = True,
 ) -> Dict[str, Any]:
-    """List open sessions for a given (project_id, user_id) pair.
+    """List open sessions for a project and user.
 
-    Wrapper over `/sessions/list_open`.
+    Use this when the user wants to resume work but doesn't specify which task,
+    and you need to show them their open sessions to choose from.
+
+    Args:
+        project_id: Project identifier
+        user_id: User identifier (auto-detected if omitted)
+        only_open: If True, only return sessions not marked complete (default: True)
+
+    Returns:
+        Dict with "sessions" key containing list of session summaries:
+        - session_id: Unique identifier
+        - project_id, user_id, agent_id, task_id: Session tuple
+        - state: SessionState with current_phase, next_action, etc.
+        - created_at, updated_at: Timestamps
+
+    Example:
+        sessions = ims_list_open_sessions(project_id="my-app")
+        for s in sessions["sessions"]:
+            print(f"{s['task_id']}: {s['state']['next_action']['description']}")
     """
 
     ims = _ims_client()
@@ -276,9 +444,28 @@ def ims_list_open_sessions(
         return resp.json()
 
 
-@mcp.tool("ims.session-memory.resume_session")
+@mcp.tool("session_memory_resume_session")
 def ims_resume_session(session_id: str) -> Dict[str, Any]:
-    """Explicitly resume a session by session_id via `/sessions/resume`."""
+    """Resume a specific session by its session_id.
+
+    Use this after calling list_open_sessions when the user has chosen which
+    session to continue working on.
+
+    Args:
+        session_id: The unique session identifier (from list_open_sessions)
+
+    Returns:
+        Dict with:
+        - status: "resumed"
+        - session_id: The session identifier
+        - project_id, user_id, agent_id, task_id: Session tuple
+        - state: SessionState with current_phase, current_stage, next_action
+
+    Example:
+        # User picks session from list
+        result = ims_resume_session(session_id="abc123-def456")
+        next_step = result["state"]["next_action"]["description"]
+    """
 
     ims = _ims_client()
     with ims.session_memory._client("session-memory") as client:  # type: ignore[attr-defined]

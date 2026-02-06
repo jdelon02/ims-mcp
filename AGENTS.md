@@ -1,15 +1,21 @@
 # IMS Agent Configuration
 
 This project is wired to a local **Integrated Memory System (IMS)** backend
-running on `http://localhost:8000`, with the following skills installed:
+running on `http://localhost:8000` (or `http://ims.delongpa.com`), with the
+following capabilities exposed via MCP:
 
 - `memory-core` – long-term, project-scoped memories (decisions, issues, key facts)
 - `session-memory` – per-project, per-user, per-agent, per-task `SessionState`
 - `context-rag` – unified context search across code, docs, and memories
 
-**All agents** (Warp, Claude, MCP tools, CI bots, and any others) MUST treat
-these IMS skills as the **primary mechanisms for memory and context** when
+**All agents** (Warp, Claude, MCP clients, CI bots, and any others) MUST treat
+these IMS capabilities as the **primary mechanisms for memory and context** when
 operating in this repository.
+
+These capabilities are accessed through the `ims-mcp` MCP server, which provides
+tools like `ims.context-rag.context_search`, `ims.memory-core.store_memory`,
+`ims.session-memory.continue_session`, etc. The MCP server handles all
+communication with the IMS backend.
 
 ---
 
@@ -36,13 +42,15 @@ session identified by this tuple.
 
 ---
 
-## 2. Context Retrieval (`context-rag` skill)
+## 2. Context Retrieval (`context-rag`)
 
 For any question or task about this project (including overviews, explanations,
-planning, or debugging), agents MUST use the **`context-rag`** skill as the
-primary way to gather context.
+planning, or debugging), agents MUST use **context-rag** as the primary way to
+gather context.
 
-When invoking `context-rag`:
+**MCP Tool**: `ims.context-rag.context_search`
+
+When invoking context-rag:
 
 1. Set `project_id = basename($PWD)`.
 2. Pass a natural-language `query` that describes the current question or task.
@@ -56,20 +64,20 @@ Agents MUST prefer **grounded answers** based on these `ContextHit` results over
 speculation, and explicitly reference important prior decisions or facts found
 in `memories` or `docs` hits.
 
-Implementation detail: the `context-rag` skill internally talks to the IMS
-backend; agents should treat the skill as the abstraction and MUST NOT call
-underlying HTTP APIs directly.
-
 ---
 
-## 3. Long-Term Memory (`memory-core` skill)
+## 3. Long-Term Memory (`memory-core`)
 
-Agents MUST use the **`memory-core`** skill as the **long-term project brain**.
+Agents MUST use **memory-core** as the **long-term project brain**.
+
+**MCP Tools**:
+- `ims.memory-core.store_memory` – Store decisions, issues, facts
+- `ims.memory-core.find_memories` – Search stored memories
 
 When important information arises:
 
 - **Decisions** (architecture, data model, tooling):
-  - Store via `memory-core` as `kind="decision"` with appropriate `tags`.
+  - Store via memory-core as `kind="decision"` with appropriate `tags`.
   - Example: "We store SessionState in Redis keyed by project/user/agent/task".
 - **Bugs fixed**:
   - Store a `kind="issue"` memory summarizing:
@@ -82,27 +90,28 @@ When important information arises:
 
 Before re-deriving solutions from scratch, agents SHOULD:
 
-- Use the `memory-core` **find_memories** operation (directly or via
-  `context-rag` with `sources` including `"memories"`) to look up existing
-  decisions, issues, or facts.
-
-Implementation detail: the `memory-core` skill internally talks to the IMS
-backend; agents should call the skill and MUST NOT call underlying HTTP APIs
-for storing or searching memories.
+- Use memory-core **find_memories** (directly or via `context-rag` with
+  `sources` including `"memories"`) to look up existing decisions, issues, or facts.
 
 ---
 
-## 4. Session State (`session-memory` skill)
+## 4. Session State (`session-memory`)
 
 `session-memory` is **REQUIRED** in IMS projects.
 
-Agents MUST use the **`session-memory`** skill to track progress and next
-actions for each session `(project_id, user_id, agent_id, task_id)`.
+Agents MUST use **session-memory** to track progress and next actions for each
+session `(project_id, user_id, agent_id, task_id)`.
+
+**MCP Tools**:
+- `ims.session-memory.auto_session` – Smart resume/create helper
+- `ims.session-memory.continue_session` – Resolve session by tuple
+- `ims.session-memory.wrap_session` – Persist updated state
+- `ims.session-memory.list_open_sessions` – List available sessions
+- `ims.session-memory.resume_session` – Resume by session_id
 
 ### 4.1 Canonical session protocol
 
-All agents and automations MUST use the `session-memory` skill in the following
-step-by-step flow:
+All agents and automations MUST use session-memory in the following step-by-step flow:
 
 1. **Start or resume work – continue/auto session**
 
@@ -117,8 +126,8 @@ step-by-step flow:
      "pick up where we stopped", "keep going", "keep working") without
      specifying which task, use high-level helpers to discover the right
      session:
-     - Prefer a `sessions.auto` / `auto_session` helper when available, which
-       will internally call `list_open_sessions` and `resume_session`.
+     - Prefer `auto_session` when available, which will internally call
+       `list_open_sessions` and `resume_session`.
      - Otherwise, call `list_open_sessions` for the current
        `(project_id, user_id)`, ask the user which open session to resume when
        multiple are returned, and then call `resume_session` or
@@ -140,7 +149,7 @@ step-by-step flow:
      - `current_stage` (Implementation / Verification / Debugging).
      - `last_checkpoint` (git hash or human label, if applicable).
      - `next_action` – a concrete, file/line-specific next step.
-   - Persist the updated state via the `session-memory` **wrap_session** op for
+   - Persist the updated state via the session-memory **wrap_session** op for
      the same tuple.
 
 4. **New chat with resume intent**
