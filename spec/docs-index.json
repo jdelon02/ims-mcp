@@ -1,0 +1,65 @@
+{
+  "name": "ims.docs-index",
+  "description": "Tools to index local documentation into Meilisearch for IMS context-rag (chunked).",
+  "tools": [
+    {
+      "name": "index_directory",
+      "description": "Index a directory tree of text/markdown documents into Meilisearch project_docs (chunked by default).",
+      "input_schema": {
+        "type": "object",
+        "required": ["root_dir"],
+        "properties": {
+          "root_dir": {
+            "type": "string",
+            "description": "Directory to index recursively."
+          },
+          "project_id": {
+            "type": ["string", "null"],
+            "description": "Defaults to basename(root_dir)."
+          },
+          "user_id": {
+            "type": ["string", "null"],
+            "description": "Defaults to IMS_USER_ID else OS username."
+          },
+          "index_uid": {
+            "type": "string",
+            "default": "project_docs"
+          },
+          "exts": {
+            "type": ["array", "null"],
+            "items": {"type": "string"},
+            "description": "Extensions to include, e.g. ['.md','.txt']"
+          },
+          "max_bytes": {
+            "type": "integer",
+            "default": 2000000
+          },
+          "prune_dirs": {
+            "type": ["array", "null"],
+            "items": {"type": "string"}
+          },
+          "chunking": {
+            "type": "boolean",
+            "default": true
+          },
+          "chunk_max_chars": {
+            "type": "integer",
+            "default": 4000
+          },
+          "snippet_chars": {
+            "type": "integer",
+            "default": 400
+          },
+          "batch_size": {
+            "type": "integer",
+            "default": 100
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      }
+    }
+  ]
+}

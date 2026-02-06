@@ -29,6 +29,10 @@
               "type": "integer",
               "minimum": 1
             }
+          },
+          "user_id": {
+            "type": ["string", "null"],
+            "description": "Optional owner user_id to scope docs retrieval when supported by the IMS backend."
           }
         }
       }

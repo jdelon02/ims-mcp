@@ -112,6 +112,11 @@ The MCP server exposes the following tools for interacting with IMS capabilities
 - `ims.context-rag.context_search`
   - Unified search across code, docs, and memories
 
+### Docs Indexing (Meilisearch)
+- `docs_index_directory`
+  - Index a directory of `.md`/`.txt` (etc.) into Meilisearch `project_docs` (chunked by default)
+  - Uses `IMS_MEILI_URL` / `IMS_MEILI_API_KEY` and stores `user_id` (from `IMS_USER_ID` or OS username)
+
 ### Long-Term Memory
 - `ims.memory-core.store_memory`
   - Store decisions, issues, and facts

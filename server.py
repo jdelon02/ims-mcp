@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional
 
 from mcp.server import FastMCP
 
+from app.meili_docs_indexer import index_directory_docs
+
 # ---------------------------------------------------------------------------
 # Environment loading (.env support)
 # ---------------------------------------------------------------------------
@@ -104,6 +106,7 @@ def ims_context_search(
     query: str,
     sources: Optional[List[str]] = None,
     per_source_limits: Optional[Dict[str, int]] = None,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Unified context search across code, docs, and memories for a project.
 
@@ -139,6 +142,70 @@ def ims_context_search(
         query=query,
         sources=sources,
         per_source_limits=per_source_limits,
+        user_id=user_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Meilisearch docs indexing
+# ---------------------------------------------------------------------------
+
+@mcp.tool("docs_index_directory")
+def docs_index_directory(
+    root_dir: str,
+    project_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    index_uid: str = "project_docs",
+    exts: Optional[List[str]] = None,
+    max_bytes: int = 2_000_000,
+    prune_dirs: Optional[List[str]] = None,
+    chunking: bool = True,
+    chunk_max_chars: int = 4000,
+    snippet_chars: int = 400,
+    batch_size: int = 100,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Index a directory of docs into Meilisearch (chunked by default).
+
+    This is intended to populate the `project_docs` index that IMS context-rag
+    reads from when retrieving `docs` hits.
+
+    Environment variables used:
+    - IMS_MEILI_URL (required)
+    - IMS_MEILI_API_KEY (optional)
+    - IMS_USER_ID (optional; used if user_id is omitted)
+
+    Args:
+        root_dir: Directory to index recursively.
+        project_id: Defaults to basename(root_dir).
+        user_id: Defaults to IMS_USER_ID else OS username.
+        index_uid: Meilisearch index uid (default: project_docs).
+        exts: List of extensions to include (e.g. [".md", ".txt"]).
+        max_bytes: Skip files larger than this.
+        prune_dirs: Directory names to prune (defaults include .git, node_modules, .venv, etc.).
+        chunking: If true, split into chunks and store 1 chunk = 1 Meili doc.
+        chunk_max_chars: Approx max characters per chunk.
+        snippet_chars: Max characters stored in the `snippet` field.
+        batch_size: Upsert request batch size.
+        dry_run: If true, only return stats; do not call Meilisearch.
+
+    Returns:
+        A dict with stats and (if not dry_run) Meilisearch task info.
+    """
+
+    return index_directory_docs(
+        root_dir=root_dir,
+        project_id=project_id,
+        user_id=user_id,
+        index_uid=index_uid,
+        exts=exts,
+        max_bytes=max_bytes,
+        prune_dirs=prune_dirs,
+        chunking=chunking,
+        chunk_max_chars=chunk_max_chars,
+        snippet_chars=snippet_chars,
+        batch_size=batch_size,
+        dry_run=dry_run,
     )
 
 

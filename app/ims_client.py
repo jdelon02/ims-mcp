@@ -236,10 +236,14 @@ class ContextRagClient(_BaseClient):
         query: str,
         sources: Optional[List[str]] = None,
         per_source_limits: Optional[Dict[str, int]] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Call `/context/search` and return the full JSON response.
 
         Response shape: `{ "results": [ContextHit, ...] }`.
+
+        If `user_id` is provided, the server may use it to scope docs retrieval
+        (Meilisearch) for per-user ownership isolation.
         """
 
         pid = project_id or _default_project_id()
@@ -251,6 +255,8 @@ class ContextRagClient(_BaseClient):
             payload["sources"] = sources
         if per_source_limits is not None:
             payload["per_source_limits"] = per_source_limits
+        if user_id is not None:
+            payload["user_id"] = user_id
 
         with self._client("context-rag") as client:
             resp = client.post("/context/search", json=payload)
