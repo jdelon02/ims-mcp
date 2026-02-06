@@ -141,3 +141,43 @@ The MCP server exposes the following tools for interacting with IMS capabilities
 
 Each tool includes comprehensive documentation in its docstring. For the complete
 IMS protocol and usage guidelines, see `AGENTS.md`.
+
+## IMS backend changes (context-rag) to take advantage of new docs semantics
+
+The `docs_index_directory` tool (and the underlying chunking/indexing logic) now writes richer per-chunk metadata into Meilisearch documents:
+
+- `snippet` (short preview)
+- `path` (relative path)
+- `ext` (file extension without dot)
+- `tags` (simple tags derived from path/extension)
+- `user_id` (owner)
+
+However, the IMS backend’s **context-rag** service (the thing behind `POST /context/search`) must be updated to *use* these fields during docs retrieval. Concretely, to leverage the new semantics you’ll typically want to update the IMS backend to:
+
+1. Return better previews for docs hits
+   - Prefer `snippet` from Meilisearch instead of returning the entire `content` chunk as the hit snippet.
+   - Keep `content` available for grounding (either return it in metadata or as a separate field), but avoid flooding the prompt/UI.
+
+2. Support docs filtering controls (ext/path/tags)
+   - Extend the docs portion of the `/context/search` request to accept optional filters such as:
+     - `ext`: allowlist (e.g. `["md","txt"]` or `["cls","trigger"]` for Apex)
+     - `path_prefix`: e.g. `"docs/"`
+     - `tags`: e.g. `["terraform","yaml"]`
+   - Map these to Meilisearch `filter` expressions, relying on `path`, `ext`, and `tags` being configured as filterable attributes.
+
+3. Handle Salesforce metadata patterns intentionally
+   - Many Salesforce repos store verbose metadata as `**/*-meta.xml`. The indexer can include these using include globs, but the retrieval layer may want to:
+     - de-prioritize or exclude `*-meta.xml` by default, unless the query suggests metadata is needed, or
+     - apply `path`/`tags` conventions to target metadata vs source.
+
+4. Guard relevance when doc counts increase
+   - Chunking + indexing more file types increases the number of Meilisearch documents substantially.
+   - Consider a light post-processing step on docs hits such as:
+     - dedupe results by `path` (keep best scoring chunk per file), and/or
+     - cap the number of unique `path` values to keep context diverse.
+
+5. Decide on ownership / multi-user scoping
+   - The indexer stores `user_id`. If you want per-user isolation for docs retrieval, the IMS backend should optionally filter by `user_id` when present.
+   - If you want project-shared docs, keep filtering project-only.
+
+If you want to keep the IMS backend interface stable, the smallest useful change is #1 (use `snippet`) plus a single optional `ext` filter for the docs retrieval portion.
