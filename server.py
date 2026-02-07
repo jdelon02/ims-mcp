@@ -22,6 +22,9 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+import httpx
 
 from mcp.server import FastMCP
 
@@ -545,6 +548,192 @@ def ims_resume_session(session_id: str) -> Dict[str, Any]:
         resp = client.post("/sessions/resume", json={"session_id": session_id})
         resp.raise_for_status()
         return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# ims.handoff tools
+# ---------------------------------------------------------------------------
+
+def _normalize_repo_full_name(val: str) -> str:
+    v = (val or "").strip()
+    if not v:
+        return ""
+    v = v.replace("https://github.com/", "").replace("http://github.com/", "")
+    v = v.replace("github.com/", "")
+    v = v.rstrip("/")
+    if v.endswith(".git"):
+        v = v[: -len(".git")]
+    return v
+
+
+def _default_github_owner() -> str:
+    return (os.getenv("IMS_DEFAULT_GITHUB_OWNER") or os.getenv("IMS_GITHUB_OWNER") or "jdelon02").strip() or "jdelon02"
+
+
+@mcp.tool("handoff_create")
+def ims_handoff_create(
+    *,
+    from_project_id: str,
+    to_project_id: str,
+    subject: str,
+    description: str = "",
+    tags: Optional[List[str]] = None,
+    priority: str = "medium",
+    issues_github_repo: Optional[str] = None,
+    links: Optional[Dict[str, Any]] = None,
+    seed_session: Optional[Dict[str, Any]] = None,
+    to_user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create a cross-project handoff.
+
+    This orchestrates:
+    - task-memory: creates a GitHub Issue (task) for the target project
+    - memory-core: stores a durable handoff note under the target project_id
+    - session-memory: seeds/updates a target session's next_action to reference the task id
+
+    Repo resolution precedence:
+    1) explicit issues_github_repo override (preferred)
+    2) backend project registry lookup (/projects/{id})
+    3) fallback convention: <default_owner>/<to_project_id>
+
+    Fail-closed rules:
+    - If registry says issues_provider=none, do not guess.
+    - If registry says vcs_provider=pantheon and no issues mapping is present, require override.
+    """
+
+    ims = _ims_client()
+
+    resolved_repo = _normalize_repo_full_name(issues_github_repo or "")
+    registry: Optional[Dict[str, Any]] = None
+    integration: Optional[Dict[str, Any]] = None
+
+    if not resolved_repo:
+        try:
+            registry = ims.project_registry.get_project(project_id=to_project_id)
+            integration = registry.get("integration") if isinstance(registry, dict) else None
+        except httpx.HTTPStatusError as e:
+            # If the project isn't in the registry yet (404), fall back.
+            if e.response is None or e.response.status_code != 404:
+                raise
+
+        if integration:
+            issues_provider = (integration.get("issues_provider") or "none").strip() or "none"
+            vcs_provider = (integration.get("vcs_provider") or "none").strip() or "none"
+
+            if issues_provider == "github":
+                resolved_repo = _normalize_repo_full_name(integration.get("issues_github_repo") or "")
+                if not resolved_repo:
+                    raise RuntimeError("project registry: issues_provider=github but issues_github_repo is missing")
+
+            elif issues_provider == "none":
+                raise RuntimeError("project registry: issues_provider=none (refusing to guess issue repo; provide issues_github_repo override)")
+
+            if vcs_provider == "pantheon" and not resolved_repo:
+                # Pantheon cannot accept issues directly; caller must provide a mapping.
+                raise RuntimeError("project registry: vcs_provider=pantheon requires issues_github_repo override or mapping")
+
+            # If an upstream repo is provided (common for Pantheon), accept it as the repo override.
+            if not resolved_repo:
+                upstream = _normalize_repo_full_name(integration.get("upstream_github_repo") or "")
+                if upstream:
+                    resolved_repo = upstream
+
+    if not resolved_repo:
+        resolved_repo = f"{_default_github_owner()}/{to_project_id}"
+
+    # 1) Create task in GitHub-backed task-memory.
+    task_tags = list(tags or [])
+    if "handoff" not in task_tags:
+        task_tags.append("handoff")
+
+    task = ims.task_memory.create_task(
+        project_id=to_project_id,
+        subject=subject,
+        description=description,
+        tags=task_tags,
+        priority=priority,
+        issues_github_repo=resolved_repo,
+    )
+
+    task_id = task.get("id")
+    task_url = (task.get("metadata") or {}).get("github_url")
+
+    # 2) Store durable handoff note in memory-core under the target project.
+    links = links or {}
+    lines = [
+        f"Handoff from `{from_project_id}` → `{to_project_id}`",
+        "",
+        f"Task: `{task_id}`" + (f" ({task_url})" if task_url else ""),
+        "",
+        "---",
+        "",
+        description or "(No description)",
+        "",
+    ]
+
+    if links:
+        lines.append("Links:")
+        for k, v in links.items():
+            lines.append(f"- {k}: {v}")
+        lines.append("")
+
+    memory = ims.memory_core.store_memory(
+        project_id=to_project_id,
+        text="\n".join(lines),
+        kind="note",
+        tags=task_tags,
+        importance=0.4,
+    )
+
+    # 3) Seed/update a target session.
+    seed_session = seed_session or {}
+    seed_agent_id = seed_session.get("agent_id") or "implementer"
+    seed_task_id = seed_session.get("task_id") or f"handoff-{uuid4().hex[:8]}"
+    current_phase = seed_session.get("current_phase") or "Handoff"
+    current_stage = seed_session.get("current_stage") or "Implementation"
+
+    initial_state: Dict[str, Any] = {
+        "project_id": to_project_id,
+        "user_id": to_user_id,
+        "agent_id": seed_agent_id,
+        "task_id": seed_task_id,
+        "current_phase": current_phase,
+        "current_stage": current_stage,
+        "next_action": {
+            "description": f"Work on task {task_id}: {subject}",
+        },
+        "metadata": {
+            "current_task_id": task_id,
+            "current_task_url": task_url,
+            "handoff_from_project_id": from_project_id,
+            "handoff_memory_id": memory.get("id"),
+        },
+    }
+
+    # Don't send null user_id in the embedded state (let backend derive it).
+    if initial_state["user_id"] is None:
+        initial_state.pop("user_id")
+
+    seeded = ims.session_memory.continue_session(
+        project_id=to_project_id,
+        user_id=to_user_id,
+        agent_id=seed_agent_id,
+        task_id=seed_task_id,
+        initial_state=initial_state,
+    )
+
+    return {
+        "resolved_issues_github_repo": resolved_repo,
+        "task": task,
+        "memory": {"id": memory.get("id")},
+        "seeded_session": {
+            "project_id": to_project_id,
+            "user_id": to_user_id,
+            "agent_id": seed_agent_id,
+            "task_id": seed_task_id,
+            "session_id": seeded.get("session_id"),
+        },
+    }
 
 
 if __name__ == "__main__":

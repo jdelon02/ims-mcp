@@ -28,7 +28,7 @@ def _default_base_url() -> str:
     Uses `IMS_BASE_URL` if set, otherwise defaults to `http://localhost:8000`.
     """
 
-    return os.getenv("IMS_BASE_URL")
+    return os.getenv("IMS_BASE_URL", "http://localhost:8000").rstrip("/")
 
 
 def _default_user_id() -> str:
@@ -264,6 +264,70 @@ class ContextRagClient(_BaseClient):
             return resp.json()
 
 
+class ProjectRegistryClient(_BaseClient):
+    """Client wrapper for project registry endpoints (project_integrations)."""
+
+    def upsert_project(self, *, project_id: str, name: Optional[str] = None, integration: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"project_id": project_id}
+        if name is not None:
+            payload["name"] = name
+        if integration is not None:
+            payload["integration"] = integration
+
+        with self._client("project-registry") as client:
+            resp = client.post("/projects/upsert", json=payload)
+            resp.raise_for_status()
+            return resp.json()
+
+    def get_project(self, *, project_id: str) -> Dict[str, Any]:
+        with self._client("project-registry") as client:
+            resp = client.get(f"/projects/{project_id}")
+            resp.raise_for_status()
+            return resp.json()
+
+
+class TaskMemoryClient(_BaseClient):
+    """Client wrapper for GitHub-backed task-memory endpoints."""
+
+    def create_task(
+        self,
+        *,
+        project_id: str,
+        subject: str,
+        description: str = "",
+        session_id: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        priority: str = "medium",
+        file_path: Optional[str] = None,
+        line_hint: Optional[int] = None,
+        owner: Optional[str] = None,
+        issues_github_repo: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "project_id": project_id,
+            "subject": subject,
+            "description": description,
+            "priority": priority,
+        }
+        if session_id is not None:
+            payload["session_id"] = session_id
+        if tags is not None:
+            payload["tags"] = tags
+        if file_path is not None:
+            payload["file_path"] = file_path
+        if line_hint is not None:
+            payload["line_hint"] = line_hint
+        if owner is not None:
+            payload["owner"] = owner
+        if issues_github_repo is not None:
+            payload["issues_github_repo"] = issues_github_repo
+
+        with self._client("task-memory") as client:
+            resp = client.post("/tasks/create", json=payload)
+            resp.raise_for_status()
+            return resp.json()
+
+
 @dataclass
 class IMSClient:
     """Aggregate client exposing memory-core, session-memory, and context-rag.
@@ -295,6 +359,18 @@ class IMSClient:
             verify_ssl=self.verify_ssl,
         )
         self.context_rag = ContextRagClient(
+            base_url=self.base_url,
+            timeout=self.timeout,
+            client_name=self.client_name,
+            verify_ssl=self.verify_ssl,
+        )
+        self.project_registry = ProjectRegistryClient(
+            base_url=self.base_url,
+            timeout=self.timeout,
+            client_name=self.client_name,
+            verify_ssl=self.verify_ssl,
+        )
+        self.task_memory = TaskMemoryClient(
             base_url=self.base_url,
             timeout=self.timeout,
             client_name=self.client_name,
