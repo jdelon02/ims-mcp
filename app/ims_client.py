@@ -22,6 +22,33 @@ import getpass
 import httpx
 
 
+def _raise_for_status_with_body(resp: httpx.Response) -> None:
+    """Raise for HTTP errors but include the response body in the exception.
+
+    FastAPI validation failures (422) often include a useful JSON body.
+    httpx.HTTPStatusError's default string is usually too terse for debugging.
+    """
+
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body = ""
+        try:
+            body = resp.text
+        except Exception:  # noqa: BLE001
+            body = "<unable to read response body>"
+
+        raise httpx.HTTPStatusError(
+            message=(
+                f"{exc}\n"
+                f"Response status: {resp.status_code}\n"
+                f"Response body: {body}"
+            ),
+            request=exc.request,
+            response=resp,
+        ) from exc
+
+
 def _default_base_url() -> str:
     """Return the base URL for the IMS HTTP service.
 
@@ -115,7 +142,7 @@ class MemoryCoreClient(_BaseClient):
 
         with self._client("memory-core") as client:
             resp = client.post("/memories/store", json=payload)
-            resp.raise_for_status()
+            _raise_for_status_with_body(resp)
             return resp.json()
 
     def find_memories(
@@ -142,7 +169,7 @@ class MemoryCoreClient(_BaseClient):
 
         with self._client("memory-core") as client:
             resp = client.post("/memories/search", json=payload)
-            resp.raise_for_status()
+            _raise_for_status_with_body(resp)
             body = resp.json()
             # Expecting shape {"results": [...]}
             return list(body.get("results", []))
@@ -187,7 +214,7 @@ class SessionMemoryClient(_BaseClient):
 
         with self._client("session-memory") as client:
             resp = client.post("/sessions/continue", json=payload)
-            resp.raise_for_status()
+            _raise_for_status_with_body(resp)
             return resp.json()
 
     def checkpoint_session(
@@ -223,7 +250,7 @@ class SessionMemoryClient(_BaseClient):
 
         with self._client("session-memory") as client:
             resp = client.post("/sessions/checkpoint", json=payload)
-            resp.raise_for_status()
+            _raise_for_status_with_body(resp)
             return resp.json()
 
     def wrap_session(
@@ -258,7 +285,7 @@ class SessionMemoryClient(_BaseClient):
 
         with self._client("session-memory") as client:
             resp = client.post("/sessions/wrap", json=payload)
-            resp.raise_for_status()
+            _raise_for_status_with_body(resp)
             return resp.json()
 
 
@@ -296,7 +323,7 @@ class ContextRagClient(_BaseClient):
 
         with self._client("context-rag") as client:
             resp = client.post("/context/search", json=payload)
-            resp.raise_for_status()
+            _raise_for_status_with_body(resp)
             return resp.json()
 
 
@@ -312,13 +339,13 @@ class ProjectRegistryClient(_BaseClient):
 
         with self._client("project-registry") as client:
             resp = client.post("/projects/upsert", json=payload)
-            resp.raise_for_status()
+            _raise_for_status_with_body(resp)
             return resp.json()
 
     def get_project(self, *, project_id: str) -> Dict[str, Any]:
         with self._client("project-registry") as client:
             resp = client.get(f"/projects/{project_id}")
-            resp.raise_for_status()
+            _raise_for_status_with_body(resp)
             return resp.json()
 
 
@@ -360,7 +387,7 @@ class TaskMemoryClient(_BaseClient):
 
         with self._client("task-memory") as client:
             resp = client.post("/tasks/create", json=payload)
-            resp.raise_for_status()
+            _raise_for_status_with_body(resp)
             return resp.json()
 
 

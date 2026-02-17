@@ -554,7 +554,9 @@ def ims_list_open_sessions(
         if user_id is not None:
             payload["user_id"] = user_id
         resp = client.post("/sessions/list_open", json=payload)
-        resp.raise_for_status()
+        from app.ims_client import _raise_for_status_with_body  # local import to avoid tool startup cycles
+
+        _raise_for_status_with_body(resp)
         return resp.json()
 
 
@@ -584,7 +586,9 @@ def ims_resume_session(session_id: str) -> Dict[str, Any]:
     ims = _ims_client()
     with ims.session_memory._client("session-memory") as client:  # type: ignore[attr-defined]
         resp = client.post("/sessions/resume", json={"session_id": session_id})
-        resp.raise_for_status()
+        from app.ims_client import _raise_for_status_with_body  # local import to avoid tool startup cycles
+
+        _raise_for_status_with_body(resp)
         return resp.json()
 
 
