@@ -35,6 +35,24 @@
       }
     },
     {
+      "name": "checkpoint_session",
+      "description": "Persist an updated SessionState snapshot mid-burst (save progress without implying pause/hand-off).",
+      "input_schema": {
+        "type": "object",
+        "required": ["project_id", "state"],
+        "properties": {
+          "project_id": {"type": "string"},
+          "user_id": {"type": "string"},
+          "agent_id": {"type": "string"},
+          "task_id": {"type": "string"},
+          "state": {
+            "type": "object",
+            "description": "Complete SessionState to persist (including session_id and identity fields)."
+          }
+        }
+      }
+    },
+    {
       "name": "wrap_session",
       "description": "Persist an updated SessionState snapshot for a given session tuple (pause/hand-off/finish).",
       "input_schema": {

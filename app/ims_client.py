@@ -25,10 +25,10 @@ import httpx
 def _default_base_url() -> str:
     """Return the base URL for the IMS HTTP service.
 
-    Uses `IMS_BASE_URL` if set, otherwise defaults to `http://localhost:8000`.
+    Uses `IMS_BASE_URL` if set, otherwise defaults to `https://ims.delongpa.com`.
     """
 
-    return os.getenv("IMS_BASE_URL", "http://localhost:8000").rstrip("/")
+    return os.getenv("IMS_BASE_URL", "https://ims.delongpa.com").rstrip("/")
 
 
 def _default_user_id() -> str:
@@ -151,7 +151,7 @@ class MemoryCoreClient(_BaseClient):
 class SessionMemoryClient(_BaseClient):
     """Client wrapper for the session-memory service.
 
-    Provides high-level `continue_session` and `wrap_session` helpers.
+    Provides high-level `continue_session`, `checkpoint_session`, and `wrap_session` helpers.
     """
 
     def continue_session(
@@ -187,6 +187,42 @@ class SessionMemoryClient(_BaseClient):
 
         with self._client("session-memory") as client:
             resp = client.post("/sessions/continue", json=payload)
+            resp.raise_for_status()
+            return resp.json()
+
+    def checkpoint_session(
+        self,
+        *,
+        project_id: Optional[str] = None,
+        state: Dict[str, Any],
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Persist an updated SessionState snapshot mid-burst via `/sessions/checkpoint`.
+
+        `checkpoint` differs from `wrap` semantically:
+        - checkpoint: "I'm still working; persist progress so far"
+        - wrap: "I'm pausing/handing off/ending this work burst"
+
+        Returns `{ "status": "checkpointed", "session_id": str, "state": {...} }`.
+        """
+
+        pid = project_id or _default_project_id()
+        uid = user_id or state.get("user_id") or _default_user_id()
+
+        payload: Dict[str, Any] = {
+            "project_id": pid,
+            "user_id": uid,
+            "state": state,
+        }
+        if agent_id is not None:
+            payload["agent_id"] = agent_id
+        if task_id is not None:
+            payload["task_id"] = task_id
+
+        with self._client("session-memory") as client:
+            resp = client.post("/sessions/checkpoint", json=payload)
             resp.raise_for_status()
             return resp.json()
 

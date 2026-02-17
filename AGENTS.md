@@ -1,8 +1,6 @@
 # IMS Agent Configuration
 
-This project is wired to a local **Integrated Memory System (IMS)** backend
-running on `http://localhost:8000` (or `http://ims.delongpa.com`), with the
-following capabilities exposed via MCP:
+This project is wired to a local **Integrated Memory System (IMS)** backend with the following capabilities exposed via MCP:
 
 - `memory-core` – long-term, project-scoped memories (decisions, issues, key facts)
 - `session-memory` – per-project, per-user, per-agent, per-task `SessionState`

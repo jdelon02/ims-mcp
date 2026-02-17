@@ -88,7 +88,7 @@ def _ims_client() -> IMSClient:
     same base URL / timeout.
     """
 
-    base_url = os.getenv("IMS_BASE_URL", "http://localhost:8000").rstrip("/")
+    base_url = os.getenv("IMS_BASE_URL", "https://ims.delongpa.com").rstrip("/")
     timeout = float(os.getenv("IMS_HTTP_TIMEOUT", "5.0"))
     client_name = os.getenv("IMS_CLIENT_NAME", "ims-mcp")
     verify_ssl = os.getenv("IMS_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
@@ -423,6 +423,44 @@ def ims_continue_session(
         agent_id=agent_id,
         task_id=task_id,
         initial_state=initial_state,
+    )
+
+
+@mcp.tool("session_memory_checkpoint_session")
+def ims_checkpoint_session(
+    project_id: str,
+    state: Dict[str, Any],
+    user_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Persist updated SessionState mid-burst (checkpoint).
+
+    Use this frequently while actively working to save progress without implying
+    you are pausing/handing off. This is intended to reduce excessive wrap calls
+    ("wrap chatter").
+
+    Args:
+        project_id: Project identifier
+        state: Updated SessionState
+        user_id: Optional user identifier
+        agent_id: Optional agent identifier
+        task_id: Optional task identifier
+
+    Returns:
+        Dict with:
+        - status: "checkpointed"
+        - session_id: Session identifier
+        - state: Persisted SessionState
+    """
+
+    ims = _ims_client()
+    return ims.session_memory.checkpoint_session(
+        project_id=project_id,
+        state=state,
+        user_id=user_id,
+        agent_id=agent_id,
+        task_id=task_id,
     )
 
 

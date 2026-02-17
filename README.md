@@ -41,9 +41,8 @@ in three ways (in order of **increasing** precedence):
 
 Supported variables:
 
-- `IMS_BASE_URL` (required)
-  - Base URL of the IMS HTTP service, e.g. `http://localhost:8000` or
-    `https://ims.delongpa.com`.
+- `IMS_BASE_URL` (optional, default `https://ims.delongpa.com`)
+  - Base URL of the IMS HTTP service (override for local dev, e.g. `http://localhost:8000`).
 - `IMS_HTTP_TIMEOUT` (optional, default `5.0` seconds)
 - `IMS_CLIENT_NAME` (optional, default `"ims-mcp"`)
 - `IMS_ENV_FILE` (optional, default `.env`)
@@ -51,7 +50,7 @@ Supported variables:
 
 ### Using a .env file (local development)
 
-Create a file named `.env` next to `server.py`:
+Create a file named `.env` next to `server.py` (only needed if you want to override defaults, e.g. local dev):
 
 ```env
 IMS_BASE_URL=http://localhost:8000
@@ -73,11 +72,12 @@ export IMS_CLIENT_NAME="ims-mcp"
 
 ## Running the MCP server locally
 
-With the venv activated and `IMS_BASE_URL` set:
+With the venv activated (and optionally `IMS_BASE_URL` set):
 
 ```bash
 source .venv/bin/activate
-export IMS_BASE_URL="http://localhost:8000"  # or your IMS URL
+# Optional override for local dev:
+# export IMS_BASE_URL="http://localhost:8000"
 python server.py
 ```
 
@@ -132,8 +132,10 @@ The MCP server exposes the following tools for interacting with IMS capabilities
   - Smart helper to resume or create sessions
 - `ims.session-memory.continue_session`
   - Resolve or create session by (project, user, agent, task) tuple
+- `ims.session-memory.checkpoint_session`
+  - Persist session state mid-burst (save progress without implying pause/hand-off)
 - `ims.session-memory.wrap_session`
-  - Persist updated session state
+  - Persist updated session state at true boundaries (pause/hand-off/finish)
 - `ims.session-memory.list_open_sessions`
   - List available sessions
 - `ims.session-memory.resume_session`
