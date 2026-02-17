@@ -583,6 +583,7 @@ def ims_handoff_create(
     links: Optional[Dict[str, Any]] = None,
     seed_session: Optional[Dict[str, Any]] = None,
     to_user_id: Optional[str] = None,
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Create a cross-project handoff.
 
@@ -641,11 +642,88 @@ def ims_handoff_create(
     if not resolved_repo:
         resolved_repo = f"{_default_github_owner()}/{to_project_id}"
 
-    # 1) Create task in GitHub-backed task-memory.
     task_tags = list(tags or [])
     if "handoff" not in task_tags:
         task_tags.append("handoff")
 
+    links = links or {}
+
+    seed_session = seed_session or {}
+    seed_agent_id = seed_session.get("agent_id") or "implementer"
+    seed_task_id = seed_session.get("task_id") or f"handoff-{uuid4().hex[:8]}"
+    current_phase = seed_session.get("current_phase") or "Handoff"
+    current_stage = seed_session.get("current_stage") or "Implementation"
+
+    # DRY RUN: return a plan without performing side effects (no GitHub issue,
+    # no memory write, no session mutation).
+    if dry_run:
+        task_payload = {
+            "project_id": to_project_id,
+            "subject": subject,
+            "description": description,
+            "tags": task_tags,
+            "priority": priority,
+            "issues_github_repo": resolved_repo,
+        }
+
+        placeholder_task_id = f"gh-{resolved_repo}-<issue_number>"
+        placeholder_task_url = f"https://github.com/{resolved_repo}/issues/<issue_number>"
+
+        memory_lines = [
+            f"Handoff from `{from_project_id}` → `{to_project_id}`",
+            "",
+            f"Task: `{placeholder_task_id}` ({placeholder_task_url})",
+            "",
+            "---",
+            "",
+            description or "(No description)",
+            "",
+        ]
+        if links:
+            memory_lines.append("Links:")
+            for k, v in links.items():
+                memory_lines.append(f"- {k}: {v}")
+            memory_lines.append("")
+
+        initial_state: Dict[str, Any] = {
+            "project_id": to_project_id,
+            "agent_id": seed_agent_id,
+            "task_id": seed_task_id,
+            "current_phase": current_phase,
+            "current_stage": current_stage,
+            "next_action": {
+                "description": f"Work on task {placeholder_task_id}: {subject}",
+            },
+            "metadata": {
+                "current_task_id": placeholder_task_id,
+                "current_task_url": placeholder_task_url,
+                "handoff_from_project_id": from_project_id,
+            },
+        }
+
+        return {
+            "dry_run": True,
+            "resolved_issues_github_repo": resolved_repo,
+            "registry": registry,
+            "integration": integration,
+            "would_create_task": task_payload,
+            "would_store_memory": {
+                "project_id": to_project_id,
+                "kind": "note",
+                "tags": task_tags,
+                "importance": 0.4,
+                "text": "\n".join(memory_lines),
+            },
+            "would_seed_session": {
+                "project_id": to_project_id,
+                "user_id": to_user_id,
+                "agent_id": seed_agent_id,
+                "task_id": seed_task_id,
+                "initial_state": initial_state,
+            },
+        }
+
+    # 1) Create task in GitHub-backed task-memory.
     task = ims.task_memory.create_task(
         project_id=to_project_id,
         subject=subject,
@@ -659,7 +737,6 @@ def ims_handoff_create(
     task_url = (task.get("metadata") or {}).get("github_url")
 
     # 2) Store durable handoff note in memory-core under the target project.
-    links = links or {}
     lines = [
         f"Handoff from `{from_project_id}` → `{to_project_id}`",
         "",
@@ -686,12 +763,6 @@ def ims_handoff_create(
     )
 
     # 3) Seed/update a target session.
-    seed_session = seed_session or {}
-    seed_agent_id = seed_session.get("agent_id") or "implementer"
-    seed_task_id = seed_session.get("task_id") or f"handoff-{uuid4().hex[:8]}"
-    current_phase = seed_session.get("current_phase") or "Handoff"
-    current_stage = seed_session.get("current_stage") or "Implementation"
-
     initial_state: Dict[str, Any] = {
         "project_id": to_project_id,
         "user_id": to_user_id,
@@ -723,6 +794,7 @@ def ims_handoff_create(
     )
 
     return {
+        "dry_run": False,
         "resolved_issues_github_repo": resolved_repo,
         "task": task,
         "memory": {"id": memory.get("id")},

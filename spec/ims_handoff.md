@@ -36,6 +36,12 @@ Given a source project, target project, and a structured “handoff packet”, t
    - links to the GitHub Issue and any source PR/commit references
 4. Seeds (or updates) a `session-memory` session in the **target project** and sets `SessionState.next_action` to reference the GitHub Issue.
 
+Dry-run mode:
+- If `dry_run=true`, the tool MUST still perform repo resolution and input validation,
+  but MUST NOT perform side effects (no GitHub issue creation, no memory-core write,
+  no session-memory mutation). Instead, it should return a structured plan of the
+  payloads it *would* send.
+
 ### Repo resolution (GitHub vs Pantheon upstream)
 A project’s **VCS remote** (where code is pushed/pulled) is not always the same as the **issue tracker repo** (where GitHub Issues live).
 
@@ -83,6 +89,9 @@ Concretely:
   // Format: "owner/repo"
   "issues_github_repo": "jdelon02/integrated-memory-system",
 
+  // Optional: if true, return a plan (no side effects)
+  "dry_run": true,
+
   "subject": "Add related-project discovery endpoints",
   "description": "Implement project_relationships table + /projects/related API ...",
   "tags": ["handoff", "integration"],
@@ -102,6 +111,8 @@ Concretely:
 ```
 
 ### Output shape (suggested)
+
+Success-path:
 ```json
 {
   "task": {
@@ -118,6 +129,35 @@ Concretely:
     "agent_id": "implementer",
     "task_id": "handoff-<opaque>",
     "session_id": "<uuid>"
+  }
+}
+```
+
+Dry-run:
+```json
+{
+  "dry_run": true,
+  "resolved_issues_github_repo": "jdelon02/integrated-memory-system",
+  "would_create_task": {
+    "project_id": "integrated-memory-system",
+    "subject": "...",
+    "description": "...",
+    "tags": ["handoff"],
+    "priority": "high",
+    "issues_github_repo": "jdelon02/integrated-memory-system"
+  },
+  "would_store_memory": {
+    "project_id": "integrated-memory-system",
+    "kind": "note",
+    "tags": ["handoff"],
+    "importance": 0.4,
+    "text": "..."
+  },
+  "would_seed_session": {
+    "project_id": "integrated-memory-system",
+    "agent_id": "implementer",
+    "task_id": "handoff-<opaque>",
+    "initial_state": { "...": "..." }
   }
 }
 ```
