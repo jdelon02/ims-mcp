@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -97,6 +98,217 @@ def _ims_client() -> IMSClient:
 
 # This name is what MCP clients will see.
 mcp = FastMCP("IMS MCP")
+
+def _utc_now_iso() -> str:
+    """Return current UTC time as ISO-8601 with Z suffix."""
+
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _post_json_probe(client: httpx.Client, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """POST to an IMS endpoint and return a compact health probe result."""
+
+    try:
+        resp = client.post(path, json=payload)
+        from app.ims_client import _raise_for_status_with_body  # local import to avoid tool startup cycles
+
+        _raise_for_status_with_body(resp)
+        body: Any = None
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+
+        probe: Dict[str, Any] = {"ok": True, "status_code": resp.status_code}
+        if isinstance(body, dict):
+            if isinstance(body.get("results"), list):
+                probe["result_count"] = len(body["results"])
+            if isinstance(body.get("sessions"), list):
+                probe["session_count"] = len(body["sessions"])
+        return probe
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _list_open_sessions_payload(
+    project_id: str,
+    user_id: Optional[str] = None,
+    only_open: bool = True,
+) -> Dict[str, Any]:
+    """Read open sessions from session-memory backend."""
+
+    ims = _ims_client()
+    with ims.session_memory._client("session-memory") as client:  # type: ignore[attr-defined]
+        payload: Dict[str, Any] = {"project_id": project_id, "only_open": only_open}
+        if user_id is not None:
+            payload["user_id"] = user_id
+        resp = client.post("/sessions/list_open", json=payload)
+        from app.ims_client import _raise_for_status_with_body  # local import to avoid tool startup cycles
+
+        _raise_for_status_with_body(resp)
+        return resp.json()
+
+
+def _extract_session_payload(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize session payload shape from auto/continue/resume responses."""
+
+    if isinstance(result.get("state"), dict):
+        return {
+            "session_id": result.get("session_id"),
+            "state": result.get("state"),
+            "status": result.get("status"),
+            "mode": result.get("mode"),
+        }
+
+    session_obj = result.get("session")
+    if isinstance(session_obj, dict) and isinstance(session_obj.get("state"), dict):
+        return {
+            "session_id": session_obj.get("session_id") or result.get("session_id"),
+            "state": session_obj.get("state"),
+            "status": session_obj.get("status") or result.get("status"),
+            "mode": result.get("mode"),
+        }
+
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# MCP resources (read-only context surfaces)
+# ---------------------------------------------------------------------------
+
+@mcp.resource(
+    "ims://health",
+    title="IMS Health",
+    description="Runtime health snapshot for IMS backend components.",
+    mime_type="application/json",
+)
+def ims_health_resource() -> Dict[str, Any]:
+    """Expose read-only backend health checks as an MCP resource."""
+
+    ims = _ims_client()
+    probe_project_id = (
+        os.getenv("IMS_HEALTH_PROJECT_ID")
+        or os.getenv("IMS_DEFAULT_PROJECT_ID")
+        or os.getenv("IMS_PROJECT_ID")
+        or "ims-mcp"
+    )
+
+    checks: Dict[str, Any] = {}
+    with ims.session_memory._client("session-memory") as client:  # type: ignore[attr-defined]
+        checks["session_memory"] = _post_json_probe(
+            client,
+            "/sessions/list_open",
+            {"project_id": probe_project_id, "only_open": True},
+        )
+    with ims.memory_core._client("memory-core") as client:  # type: ignore[attr-defined]
+        checks["memory_core"] = _post_json_probe(
+            client,
+            "/memories/search",
+            {"project_id": probe_project_id, "query": "health check", "limit": 1},
+        )
+    with ims.context_rag._client("context-rag") as client:  # type: ignore[attr-defined]
+        checks["context_rag"] = _post_json_probe(
+            client,
+            "/context/search",
+            {
+                "project_id": probe_project_id,
+                "query": "health check",
+                "sources": ["memories"],
+                "per_source_limits": {"memories": 1},
+            },
+        )
+
+    overall_status = "ok" if all(c.get("ok") for c in checks.values()) else "degraded"
+    return {
+        "status": overall_status,
+        "checked_at": _utc_now_iso(),
+        "ims_base_url": ims.base_url,
+        "timeout_seconds": ims.timeout,
+        "verify_ssl": ims.verify_ssl,
+        "probe_project_id": probe_project_id,
+        "checks": checks,
+    }
+
+
+@mcp.resource(
+    "ims://capabilities",
+    title="IMS Capabilities",
+    description="Discover available tools/resources and server configuration.",
+    mime_type="application/json",
+)
+async def ims_capabilities_resource() -> Dict[str, Any]:
+    """Expose server/tool/resource capability metadata."""
+
+    ims = _ims_client()
+    tools = await mcp.list_tools()
+    resources = await mcp.list_resources()
+    resource_templates = await mcp.list_resource_templates()
+
+    def _compact(item: Any, keys: List[str]) -> Dict[str, Any]:
+        data = item.model_dump() if hasattr(item, "model_dump") else {}
+        return {k: data[k] for k in keys if data.get(k) is not None}
+
+    return {
+        "server": {"name": "IMS MCP"},
+        "generated_at": _utc_now_iso(),
+        "backend": {
+            "ims_base_url": ims.base_url,
+            "timeout_seconds": ims.timeout,
+            "verify_ssl": ims.verify_ssl,
+        },
+        "counts": {
+            "tools": len(tools),
+            "resources": len(resources),
+            "resource_templates": len(resource_templates),
+        },
+        "tools": [_compact(t, ["name", "title", "description"]) for t in tools],
+        "resources": [_compact(r, ["uri", "name", "title", "description", "mimeType"]) for r in resources],
+        "resource_templates": [
+            _compact(t, ["uriTemplate", "name", "title", "description", "mimeType"]) for t in resource_templates
+        ],
+    }
+
+
+@mcp.resource(
+    "ims://sessions/{project_id}/open",
+    title="Open Sessions Snapshot (project)",
+    description="Open sessions snapshot for a project using inferred user context.",
+    mime_type="application/json",
+)
+def ims_open_sessions_snapshot(project_id: str) -> Dict[str, Any]:
+    """Expose a read-only open-sessions snapshot by project_id."""
+
+    payload = _list_open_sessions_payload(project_id=project_id, user_id=None, only_open=True)
+    sessions = payload.get("sessions", []) if isinstance(payload, dict) else []
+    return {
+        "snapshot_at": _utc_now_iso(),
+        "project_id": project_id,
+        "user_id": None,
+        "only_open": True,
+        "count": len(sessions) if isinstance(sessions, list) else 0,
+        "sessions": sessions,
+    }
+
+
+@mcp.resource(
+    "ims://sessions/{project_id}/{user_id}/open",
+    title="Open Sessions Snapshot (project + user)",
+    description="Open sessions snapshot for an explicit project_id and user_id.",
+    mime_type="application/json",
+)
+def ims_open_sessions_snapshot_for_user(project_id: str, user_id: str) -> Dict[str, Any]:
+    """Expose a read-only open-sessions snapshot by project_id and user_id."""
+
+    payload = _list_open_sessions_payload(project_id=project_id, user_id=user_id, only_open=True)
+    sessions = payload.get("sessions", []) if isinstance(payload, dict) else []
+    return {
+        "snapshot_at": _utc_now_iso(),
+        "project_id": project_id,
+        "user_id": user_id,
+        "only_open": True,
+        "count": len(sessions) if isinstance(sessions, list) else 0,
+        "sessions": sessions,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +588,101 @@ def ims_auto_session(
         resp.raise_for_status()
         return resp.json()
 
+@mcp.tool("session_memory_resolve_session")
+def ims_resolve_session(
+    project_id: str,
+    hook_session_id: str,
+    user_message: str = "resume or start a session",
+    user_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+    resume_session_id: Optional[str] = None,
+    force_new: bool = False,
+) -> Dict[str, Any]:
+    """Resolve and bind an IMS session to a hook/session identifier.
+
+    This helper is intended for strict hook gating:
+    - resolves a working session (resume or create),
+    - writes `state.metadata.hook_session_id`,
+    - persists the metadata via checkpoint_session.
+    """
+
+    ims = _ims_client()
+
+    # Resolve session first (explicit resume, forced new, or auto behavior).
+    if resume_session_id:
+        base_result = ims_resume_session(session_id=resume_session_id)
+    elif force_new:
+        resolved_task_id = task_id or f"session-{uuid4().hex[:8]}"
+        base_result = ims.session_memory.continue_session(
+            project_id=project_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            task_id=resolved_task_id,
+        )
+    elif task_id is not None:
+        base_result = ims.session_memory.continue_session(
+            project_id=project_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            task_id=task_id,
+        )
+    else:
+        base_result = ims_auto_session(
+            project_id=project_id,
+            user_message=user_message,
+            user_id=user_id,
+            agent_id=agent_id,
+        )
+
+    if isinstance(base_result, dict) and base_result.get("mode") == "choice_required":
+        return {
+            "status": "choice_required",
+            "hook_session_id": hook_session_id,
+            "project_id": project_id,
+            "result": base_result,
+        }
+
+    normalized = _extract_session_payload(base_result if isinstance(base_result, dict) else {})
+    state = normalized.get("state")
+    if not isinstance(state, dict):
+        return {
+            "status": "error",
+            "hook_session_id": hook_session_id,
+            "project_id": project_id,
+            "message": "Unable to normalize session payload from resolver response",
+            "result": base_result,
+        }
+
+    metadata = state.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata["hook_session_id"] = hook_session_id
+    metadata["resolved_via"] = "session_memory_resolve_session"
+    metadata["resolved_at"] = _utc_now_iso()
+    metadata["hook_user_message"] = user_message
+    state["metadata"] = metadata
+
+    persisted = ims.session_memory.checkpoint_session(
+        project_id=project_id,
+        state=state,
+        user_id=user_id or state.get("user_id"),
+        agent_id=agent_id or state.get("agent_id"),
+        task_id=task_id or state.get("task_id"),
+    )
+
+    return {
+        "status": "resolved",
+        "hook_session_id": hook_session_id,
+        "project_id": project_id,
+        "resolution": {
+            "source_status": normalized.get("status"),
+            "source_mode": normalized.get("mode"),
+        },
+        "session_id": persisted.get("session_id") or normalized.get("session_id"),
+        "state": persisted.get("state", state),
+    }
+
 
 @mcp.tool("session_memory_continue_session")
 def ims_continue_session(
@@ -547,17 +854,7 @@ def ims_list_open_sessions(
         for s in sessions["sessions"]:
             print(f"{s['task_id']}: {s['state']['next_action']['description']}")
     """
-
-    ims = _ims_client()
-    with ims.session_memory._client("session-memory") as client:  # type: ignore[attr-defined]
-        payload: Dict[str, Any] = {"project_id": project_id, "only_open": only_open}
-        if user_id is not None:
-            payload["user_id"] = user_id
-        resp = client.post("/sessions/list_open", json=payload)
-        from app.ims_client import _raise_for_status_with_body  # local import to avoid tool startup cycles
-
-        _raise_for_status_with_body(resp)
-        return resp.json()
+    return _list_open_sessions_payload(project_id=project_id, user_id=user_id, only_open=only_open)
 
 
 @mcp.tool("session_memory_resume_session")

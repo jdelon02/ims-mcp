@@ -45,8 +45,12 @@ Supported variables:
   - Base URL of the IMS HTTP service (override for local dev, e.g. `http://localhost:8000`).
 - `IMS_HTTP_TIMEOUT` (optional, default `5.0` seconds)
 - `IMS_CLIENT_NAME` (optional, default `"ims-mcp"`)
+- `IMS_VERIFY_SSL` (optional, default `true`)
+  - Set to `false` only for local/dev environments with self-signed certs.
 - `IMS_ENV_FILE` (optional, default `.env`)
   - If set, points to a `.env`-style file to load before reading other vars.
+- `IMS_HEALTH_PROJECT_ID` (optional, default `ims-mcp`)
+  - Project id used by the `ims://health` resource when probing read endpoints.
 
 ### Using a .env file (local development)
 
@@ -68,6 +72,7 @@ Example using exported variables:
 export IMS_BASE_URL="http://ims.delongpa.com"
 export IMS_HTTP_TIMEOUT="5.0"
 export IMS_CLIENT_NAME="ims-mcp"
+export IMS_VERIFY_SSL="true"
 ```
 
 ## Running the MCP server locally
@@ -130,6 +135,8 @@ The MCP server exposes the following tools for interacting with IMS capabilities
 ### Session State
 - `ims.session-memory.auto_session`
   - Smart helper to resume or create sessions
+- `ims.session-memory.resolve_session`
+  - Hook-aware resolver that resumes/creates a session and binds `hook_session_id` into session metadata for strict session gating
 - `ims.session-memory.continue_session`
   - Resolve or create session by (project, user, agent, task) tuple
 - `ims.session-memory.checkpoint_session`
@@ -143,6 +150,22 @@ The MCP server exposes the following tools for interacting with IMS capabilities
 
 Each tool includes comprehensive documentation in its docstring. For the complete
 IMS protocol and usage guidelines, see `AGENTS.md`.
+
+## Exposed resources
+
+The MCP server also exposes read-only resources for inspection/discovery:
+
+### Health and capabilities
+- `ims://health`
+  - Runtime health snapshot for `session-memory`, `memory-core`, and `context-rag` reachability checks.
+- `ims://capabilities`
+  - Enumerates server capabilities, including tool/resource counts and discoverable tool/resource metadata.
+
+### Session snapshots
+- `ims://sessions/{project_id}/open`
+  - Snapshot of open sessions for a project, using inferred user context from the backend.
+- `ims://sessions/{project_id}/{user_id}/open`
+  - Snapshot of open sessions for an explicit project and user.
 
 ## IMS backend changes (context-rag) to take advantage of new docs semantics
 
