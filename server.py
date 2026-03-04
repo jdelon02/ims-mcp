@@ -24,6 +24,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+try:
+    import pwd
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    pwd = None  # type: ignore[assignment]
 
 import httpx
 
@@ -103,6 +107,27 @@ def _utc_now_iso() -> str:
     """Return current UTC time as ISO-8601 with Z suffix."""
 
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+def _default_user_id() -> str:
+    """Resolve a stable local user identifier for session scoping."""
+
+    explicit = (os.getenv("IMS_USER_ID") or "").strip()
+    if explicit:
+        return explicit
+
+    if pwd is not None:
+        try:
+            local_user = pwd.getpwuid(os.getuid()).pw_name
+            if local_user:
+                return local_user
+        except Exception:
+            pass
+
+    for key in ("LOGNAME", "USER", "USERNAME"):
+        value = (os.getenv(key) or "").strip()
+        if value:
+            return value
+
+    return "default"
 
 
 def _post_json_probe(client: httpx.Client, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -136,12 +161,15 @@ def _list_open_sessions_payload(
     only_open: bool = True,
 ) -> Dict[str, Any]:
     """Read open sessions from session-memory backend."""
+    resolved_user_id = (user_id or "").strip() or _default_user_id()
 
     ims = _ims_client()
     with ims.session_memory._client("session-memory") as client:  # type: ignore[attr-defined]
-        payload: Dict[str, Any] = {"project_id": project_id, "only_open": only_open}
-        if user_id is not None:
-            payload["user_id"] = user_id
+        payload: Dict[str, Any] = {
+            "project_id": project_id,
+            "only_open": only_open,
+            "user_id": resolved_user_id,
+        }
         resp = client.post("/sessions/list_open", json=payload)
         from app.ims_client import _raise_for_status_with_body  # local import to avoid tool startup cycles
 
@@ -304,13 +332,13 @@ async def ims_capabilities_resource() -> Dict[str, Any]:
 )
 def ims_open_sessions_snapshot(project_id: str) -> Dict[str, Any]:
     """Expose a read-only open-sessions snapshot by project_id."""
-
-    payload = _list_open_sessions_payload(project_id=project_id, user_id=None, only_open=True)
+    resolved_user_id = _default_user_id()
+    payload = _list_open_sessions_payload(project_id=project_id, user_id=resolved_user_id, only_open=True)
     sessions = payload.get("sessions", []) if isinstance(payload, dict) else []
     return {
         "snapshot_at": _utc_now_iso(),
         "project_id": project_id,
-        "user_id": None,
+        "user_id": resolved_user_id,
         "only_open": True,
         "count": len(sessions) if isinstance(sessions, list) else 0,
         "sessions": sessions,
@@ -599,6 +627,7 @@ def ims_auto_session(
     """
 
     ims = _ims_client()
+    resolved_user_id = (user_id or "").strip() or _default_user_id()
     # SessionMemoryClient currently exposes only continue_session/wrap_session;
     # for now we call the HTTP endpoint directly via its base client.
     # When/if IMSClient gains an explicit auto_session helper, we can switch.
@@ -606,9 +635,8 @@ def ims_auto_session(
         payload: Dict[str, Any] = {
             "project_id": project_id,
             "user_message": user_message,
+            "user_id": resolved_user_id,
         }
-        if user_id is not None:
-            payload["user_id"] = user_id
         if agent_id is not None:
             payload["agent_id"] = agent_id
         resp = client.post("/sessions/auto", json=payload)
@@ -635,6 +663,7 @@ def ims_resolve_session(
     """
 
     ims = _ims_client()
+    resolved_user_id = (user_id or "").strip() or _default_user_id()
 
     # Resolve session first (explicit resume, forced new, or auto behavior).
     if resume_session_id:
@@ -643,14 +672,14 @@ def ims_resolve_session(
         resolved_task_id = task_id or f"session-{uuid4().hex[:8]}"
         base_result = ims.session_memory.continue_session(
             project_id=project_id,
-            user_id=user_id,
+            user_id=resolved_user_id,
             agent_id=agent_id,
             task_id=resolved_task_id,
         )
     elif task_id is not None:
         base_result = ims.session_memory.continue_session(
             project_id=project_id,
-            user_id=user_id,
+            user_id=resolved_user_id,
             agent_id=agent_id,
             task_id=task_id,
         )
@@ -658,7 +687,7 @@ def ims_resolve_session(
         base_result = ims_auto_session(
             project_id=project_id,
             user_message=user_message,
-            user_id=user_id,
+            user_id=resolved_user_id,
             agent_id=agent_id,
         )
 
@@ -689,11 +718,12 @@ def ims_resolve_session(
     metadata["resolved_at"] = _utc_now_iso()
     metadata["hook_user_message"] = user_message
     state["metadata"] = metadata
+    effective_user_id = (user_id or "").strip() or state.get("user_id") or _default_user_id()
 
     persisted = ims.session_memory.checkpoint_session(
         project_id=project_id,
         state=state,
-        user_id=user_id or state.get("user_id"),
+        user_id=effective_user_id,
         agent_id=agent_id or state.get("agent_id"),
         task_id=task_id or state.get("task_id"),
     )
