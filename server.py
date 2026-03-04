@@ -172,6 +172,33 @@ def _extract_session_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _find_bound_session(
+    sessions: List[Dict[str, Any]],
+    hook_session_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Find the first session whose metadata binds to hook_session_id."""
+
+    if not hook_session_id:
+        return None
+
+    for sess in sessions:
+        if not isinstance(sess, dict):
+            continue
+
+        state_obj = sess.get("state") if isinstance(sess.get("state"), dict) else {}
+        metadata_candidates: List[Dict[str, Any]] = []
+        for maybe in (sess.get("metadata"), state_obj.get("metadata")):
+            if isinstance(maybe, dict):
+                metadata_candidates.append(maybe)
+
+        for metadata in metadata_candidates:
+            for key in ("hook_session_id", "claude_session_id", "client_session_id"):
+                if metadata.get(key) == hook_session_id:
+                    return sess
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # MCP resources (read-only context surfaces)
 # ---------------------------------------------------------------------------
@@ -681,6 +708,38 @@ def ims_resolve_session(
         },
         "session_id": persisted.get("session_id") or normalized.get("session_id"),
         "state": persisted.get("state", state),
+    }
+
+
+@mcp.tool("session_memory_get_bound_session")
+def ims_get_bound_session(
+    project_id: str,
+    hook_session_id: str,
+    user_id: Optional[str] = None,
+    only_open: bool = True,
+) -> Dict[str, Any]:
+    """Get the IMS session currently bound to a hook session id."""
+
+    payload = _list_open_sessions_payload(project_id=project_id, user_id=user_id, only_open=only_open)
+    sessions_raw = payload.get("sessions", []) if isinstance(payload, dict) else []
+    sessions = [s for s in sessions_raw if isinstance(s, dict)]
+
+    bound = _find_bound_session(sessions=sessions, hook_session_id=hook_session_id)
+    if not bound:
+        return {
+            "status": "not_found",
+            "project_id": project_id,
+            "hook_session_id": hook_session_id,
+            "session": None,
+            "session_count": len(sessions),
+        }
+
+    return {
+        "status": "found",
+        "project_id": project_id,
+        "hook_session_id": hook_session_id,
+        "session": bound,
+        "session_count": len(sessions),
     }
 
 

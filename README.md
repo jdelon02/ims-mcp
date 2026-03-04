@@ -137,6 +137,8 @@ The MCP server exposes the following tools for interacting with IMS capabilities
   - Smart helper to resume or create sessions
 - `ims.session-memory.resolve_session`
   - Hook-aware resolver that resumes/creates a session and binds `hook_session_id` into session metadata for strict session gating
+- `ims.session-memory.get_bound_session`
+  - Lookup helper to verify whether a `hook_session_id` is already bound to an open IMS session for a project
 - `ims.session-memory.continue_session`
   - Resolve or create session by (project, user, agent, task) tuple
 - `ims.session-memory.checkpoint_session`
