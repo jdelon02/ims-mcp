@@ -212,23 +212,16 @@ def _check_active_session(project_id: str) -> None:
     """
     ims = _ims_client()
     with ims.session_memory._client("session-memory") as client:  # type: ignore[attr-defined]
-        try:
-            resp = client.get(f"/sessions/active/{project_id}")
-            if resp.status_code == 404:
-                raise RuntimeError(
-                    f"No active session for project '{project_id}'. "
-                    "You must resolve a session first using auto_session, continue_session, or resume_session."
-                )
-            from app.ims_client import _raise_for_status_with_body
-            _raise_for_status_with_body(resp)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                raise RuntimeError(
-                    f"No active session for project '{project_id}'. "
-                    "You must resolve a session first using auto_session, continue_session, or resume_session."
-                ) from exc
-            raise
-
+        resp = client.get(f"/sessions/active/{project_id}")
+        from app.ims_client import _raise_for_status_with_body
+        _raise_for_status_with_body(resp)
+        
+        data = resp.json()
+        if not data.get("active", False):
+            raise RuntimeError(
+                f"No active session for project '{project_id}'. "
+                "You must resolve a session first using auto_session, continue_session, or resume_session."
+            )
 
 def _find_bound_session(
     sessions: List[Dict[str, Any]],
