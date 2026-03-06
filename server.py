@@ -200,6 +200,35 @@ def _extract_session_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _check_active_session(project_id: str) -> None:
+    """Check if an active session exists for the project; raise if not.
+    
+    This enforces the IMS protocol requirement that all work must be done
+    within an active session. Call this before non-session-memory operations.
+    
+    Raises:
+        RuntimeError: If no active session exists for the project.
+    """
+    ims = _ims_client()
+    with ims.session_memory._client("session-memory") as client:  # type: ignore[attr-defined]
+        try:
+            resp = client.get(f"/sessions/active/{project_id}")
+            if resp.status_code == 404:
+                raise RuntimeError(
+                    f"No active session for project '{project_id}'. "
+                    "You must resolve a session first using auto_session, continue_session, or resume_session."
+                )
+            from app.ims_client import _raise_for_status_with_body
+            _raise_for_status_with_body(resp)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise RuntimeError(
+                    f"No active session for project '{project_id}'. "
+                    "You must resolve a session first using auto_session, continue_session, or resume_session."
+                ) from exc
+            raise
+
+
 def _find_bound_session(
     sessions: List[Dict[str, Any]],
     hook_session_id: str,
@@ -405,7 +434,9 @@ def ims_context_search(
             per_source_limits={"code": 5, "memories": 5}
         )
     """
-
+    # Enforce active session requirement
+    _check_active_session(project_id)
+    
     ims = _ims_client()
     return ims.context_rag.context_search(
         project_id=project_id,
@@ -532,7 +563,9 @@ def ims_store_memory(
             tags=["mcp", "sdk-upgrade"]
         )
     """
-
+    # Enforce active session requirement
+    _check_active_session(project_id)
+    
     ims = _ims_client()
     return ims.memory_core.store_memory(
         project_id=project_id,
@@ -581,7 +614,9 @@ def ims_find_memories(
             limit=5
         )
     """
-
+    # Enforce active session requirement
+    _check_active_session(project_id)
+    
     ims = _ims_client()
     return ims.memory_core.find_memories(
         project_id=project_id,
