@@ -1,4 +1,4 @@
-"""IMS client wrappers for memory-core, session-memory, and context-rag.
+"""IMS client wrappers for memory-core, session-memory, context-rag, and graph.
 
 This module provides a small, opinionated client layer for the Integrated
 Memory System (IMS). Agents and tools should prefer using these clients over
@@ -7,7 +7,8 @@ issuing raw HTTP requests to the FastAPI service.
 - `MemoryCoreClient` wraps the long-term memory endpoints.
 - `SessionMemoryClient` wraps the session-memory endpoints.
 - `ContextRagClient` wraps the unified context search endpoint.
-- `IMSClient` aggregates the three into a single convenience entrypoint.
+- `GraphClient` wraps the graph/ontology endpoints.
+- `IMSClient` aggregates all clients into a single convenience entrypoint.
 
 By default, the clients talk to `IMS_BASE_URL` (env var).
 """
@@ -20,6 +21,8 @@ import os
 import getpass
 
 import httpx
+
+from app.graph_client import GraphClient
 
 
 def _raise_for_status_with_body(resp: httpx.Response) -> None:
@@ -300,6 +303,8 @@ class ContextRagClient(_BaseClient):
         sources: Optional[List[str]] = None,
         per_source_limits: Optional[Dict[str, int]] = None,
         user_id: Optional[str] = None,
+        expand_graph: bool = True,
+        graph_depth: int = 2,
     ) -> Dict[str, Any]:
         """Call `/context/search` and return the full JSON response.
 
@@ -307,12 +312,17 @@ class ContextRagClient(_BaseClient):
 
         If `user_id` is provided, the server may use it to scope docs retrieval
         (Meilisearch) for per-user ownership isolation.
+        
+        If `expand_graph` is true, the backend will expand vector search results
+        via graph relationships up to `graph_depth` levels.
         """
 
         pid = project_id or _default_project_id()
         payload: Dict[str, Any] = {
             "project_id": pid,
             "query": query,
+            "expand_graph": expand_graph,
+            "graph_depth": graph_depth,
         }
         if sources is not None:
             payload["sources"] = sources
@@ -393,7 +403,7 @@ class TaskMemoryClient(_BaseClient):
 
 @dataclass
 class IMSClient:
-    """Aggregate client exposing memory-core, session-memory, and context-rag.
+    """Aggregate client exposing memory-core, session-memory, context-rag, and graph.
 
     Example usage:
 
@@ -401,6 +411,7 @@ class IMSClient:
         session = ims.session_memory.continue_session(agent_id="planner")
         memories = ims.memory_core.find_memories(query="auth decision")
         ctx = ims.context_rag.context_search(query="How is session state stored?")
+        node_id = ims.graph.create_node("Decision", {"text": "Use Redis"})
     """
 
     base_url: str = _default_base_url()
@@ -434,6 +445,12 @@ class IMSClient:
             verify_ssl=self.verify_ssl,
         )
         self.task_memory = TaskMemoryClient(
+            base_url=self.base_url,
+            timeout=self.timeout,
+            client_name=self.client_name,
+            verify_ssl=self.verify_ssl,
+        )
+        self.graph = GraphClient(
             base_url=self.base_url,
             timeout=self.timeout,
             client_name=self.client_name,

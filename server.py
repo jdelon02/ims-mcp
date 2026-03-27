@@ -19,6 +19,7 @@ For usage guidelines and the complete IMS protocol, see AGENTS.md.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -406,11 +407,16 @@ def ims_context_search(
     sources: Optional[List[str]] = None,
     per_source_limits: Optional[Dict[str, int]] = None,
     user_id: Optional[str] = None,
+    expand_graph: bool = True,
+    graph_depth: int = 2,
 ) -> Dict[str, Any]:
-    """Unified context search across code, docs, and memories for a project.
+    """Unified context search across code, docs, and memories with optional graph expansion.
 
     Use this as the PRIMARY way to gather context before answering questions or
     starting work. Returns ContextHit objects with snippets and metadata.
+    
+    Enhanced to include graph relationship expansion for richer context when
+    expand_graph is enabled.
 
     Args:
         project_id: Project identifier (typically basename of working directory)
@@ -419,19 +425,38 @@ def ims_context_search(
                  Include at least "memories" and relevant others.
         per_source_limits: Dict mapping source names to max results per source.
                           Example: {"code": 5, "docs": 5, "memories": 5}
+        expand_graph: Whether to expand via graph relationships (default: True).
+                     When enabled, vector search results are enriched with related
+                     entities from the ontology graph.
+        graph_depth: How deep to traverse relationships (1-3, default: 2).
+                    Higher values return more context but may be slower.
 
     Returns:
         Dict with "results" key containing list of ContextHit objects, each with:
         - snippet: The actual text/code snippet
         - source: Which source it came from (code/docs/memories)
         - metadata: Additional context (file path, memory kind/tags, etc.)
+        
+        When expand_graph=True, results include graph-expanded context with
+        related decisions, components, and bugs.
 
-    Example:
+    Examples:
+        # Vector search with graph expansion (default)
         results = ims_context_search(
             project_id="my-project",
             query="How is authentication implemented?",
             sources=["code", "memories"],
-            per_source_limits={"code": 5, "memories": 5}
+            per_source_limits={"code": 5, "memories": 5},
+            expand_graph=True,
+            graph_depth=2
+        )
+        
+        # Vector-only search (no graph expansion)
+        results = ims_context_search(
+            project_id="my-project",
+            query="authentication",
+            sources=["code"],
+            expand_graph=False
         )
     """
     # Enforce active session requirement
@@ -444,6 +469,8 @@ def ims_context_search(
         sources=sources,
         per_source_limits=per_source_limits,
         user_id=user_id,
+        expand_graph=expand_graph,
+        graph_depth=graph_depth,
     )
 
 
@@ -532,19 +559,31 @@ def ims_store_memory(
 
     Use this to persist important information that should be remembered across
     sessions and referenced later.
+    
+    Enhanced with ontology graph integration: When kind="decision" or kind="issue",
+    the backend automatically creates corresponding graph nodes (Decision or Bug)
+    in the knowledge graph, enabling relationship tracking and impact analysis.
 
     Args:
         project_id: Project identifier
         text: Memory content - be clear and specific
         kind: Memory type. Use:
               - "decision": Architecture, data model, tooling choices
+                           (auto-creates Decision graph node)
               - "issue": Bug fixes (symptoms, root cause, solution)
+                        (auto-creates Bug graph node)
               - "fact": Stable config (ports, URLs, feature flags)
+                       (memory only, no graph node)
         tags: Optional categorization tags (e.g., ["auth", "backend"])
         importance: Optional 0.0-1.0 score for memory significance
 
     Returns:
         Dict with stored memory metadata including memory_id
+    
+    Behavior:
+        - kind="decision" → creates memory in Postgres + embedding in Qdrant + Decision node in Neo4j
+        - kind="issue" → creates memory in Postgres + embedding in Qdrant + Bug node in Neo4j
+        - kind="note"/"fact" → creates memory in Postgres + embedding in Qdrant only
 
     Examples:
         # Store architecture decision
@@ -1269,6 +1308,550 @@ def ims_handoff_create(
             "session_id": seeded.get("session_id"),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# ims.graph tools (ontology node creation)
+# ---------------------------------------------------------------------------
+
+@mcp.tool("graph_create_decision")
+def ims_graph_create_decision(
+    project_id: str,
+    text: str,
+    rationale: str,
+    alternatives: Optional[List[str]] = None,
+    consequences: Optional[List[str]] = None,
+    importance: float = 0.5,
+    tags: Optional[List[str]] = None,
+) -> str:
+    """Create a Decision node in the ontology graph.
+    
+    Use this to record architectural and technical decisions with their rationale.
+    
+    Args:
+        project_id: Project identifier
+        text: The decision made (min 10 chars)
+        rationale: Why this decision was made (min 20 chars)
+        alternatives: Options that were considered
+        consequences: Expected outcomes and tradeoffs
+        importance: Significance 0.0-1.0 (affects retention tier)
+        tags: Categorization tags
+    
+    Returns:
+        The UUID of the created Decision node
+    
+    Example:
+        decision_id = ims_graph_create_decision(
+            project_id="my-app",
+            text="Use Redis for session state storage",
+            rationale="Need atomic operations, TTL support, and multi-instance capability",
+            alternatives=["File-based (rejected - no concurrency)"],
+            consequences=["Requires Redis deployment", "Enables horizontal scaling"],
+            importance=0.9,
+            tags=["architecture", "redis", "session-state"]
+        )
+    """
+    # Validate project_id
+    if not project_id or not isinstance(project_id, str):
+        raise ValueError("project_id must be a non-empty string")
+    if not project_id.strip():
+        raise ValueError("project_id cannot be empty or whitespace only")
+    
+    # Validate required field lengths
+    if len(text.strip()) < 10:
+        raise ValueError("text must be at least 10 characters")
+    if len(rationale.strip()) < 20:
+        raise ValueError("rationale must be at least 20 characters")
+    if not 0.0 <= importance <= 1.0:
+        raise ValueError("importance must be between 0.0 and 1.0")
+    
+    ims = _ims_client()
+    properties: Dict[str, Any] = {
+        "project_id": project_id,
+        "text": text,
+        "rationale": rationale,
+        "importance": importance,
+        "access_count": 0,
+    }
+    if alternatives:
+        properties["alternatives"] = alternatives
+    if consequences:
+        properties["consequences"] = consequences
+    if tags:
+        properties["tags"] = tags
+    
+    node_id = ims.graph.create_node("Decision", properties)
+    return node_id
+
+
+@mcp.tool("graph_create_bug")
+def ims_graph_create_bug(
+    project_id: str,
+    symptoms: str,
+    status: str = "open",
+    severity: str = "medium",
+    root_cause: Optional[str] = None,
+    fix: Optional[str] = None,
+    primary_file: Optional[str] = None,
+    line_hint: Optional[int] = None,
+    external_id: Optional[str] = None,
+    external_system: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+) -> str:
+    """Create a Bug node in the ontology graph.
+    
+    Use this to track bugs with symptoms, root cause, and resolution.
+    
+    Args:
+        project_id: Project identifier
+        symptoms: What's broken/wrong (min 10 chars)
+        status: Bug lifecycle state (open, in_progress, blocked, fixed, wont_fix)
+        severity: Impact level (low, medium, high, critical)
+        root_cause: Why it's happening
+        fix: How it was fixed
+        primary_file: Main file where bug exists
+        line_hint: Approximate line number
+        external_id: Link to external system (e.g., "gh-owner/repo-123")
+        external_system: External system type (e.g., "github", "jira")
+        tags: Categorization tags
+    
+    Returns:
+        The UUID of the created Bug node
+    
+    Example:
+        bug_id = ims_graph_create_bug(
+            project_id="my-app",
+            symptoms="Server crashes on invalid JWT token",
+            status="open",
+            severity="high",
+            root_cause="Missing null check in token validation",
+            primary_file="auth/middleware.py",
+            line_hint=42,
+            tags=["auth", "crash"]
+        )
+    """
+    # Validate project_id
+    if not project_id or not isinstance(project_id, str):
+        raise ValueError("project_id must be a non-empty string")
+    if not project_id.strip():
+        raise ValueError("project_id cannot be empty or whitespace only")
+    
+    # Validate required field lengths
+    if len(symptoms.strip()) < 10:
+        raise ValueError("symptoms must be at least 10 characters")
+    
+    # Validate enum values
+    valid_statuses = ["open", "in_progress", "blocked", "fixed", "wont_fix"]
+    if status not in valid_statuses:
+        raise ValueError(f"status must be one of {valid_statuses}")
+    
+    valid_severities = ["low", "medium", "high", "critical"]
+    if severity not in valid_severities:
+        raise ValueError(f"severity must be one of {valid_severities}")
+    
+    ims = _ims_client()
+    properties: Dict[str, Any] = {
+        "project_id": project_id,
+        "symptoms": symptoms,
+        "status": status,
+        "severity": severity,
+    }
+    if root_cause:
+        properties["root_cause"] = root_cause
+    if fix:
+        properties["fix"] = fix
+    if primary_file:
+        properties["primary_file"] = primary_file
+    if line_hint is not None:
+        properties["line_hint"] = line_hint
+    if external_id:
+        properties["external_id"] = external_id
+    if external_system:
+        properties["external_system"] = external_system
+    if tags:
+        properties["tags"] = tags
+    
+    node_id = ims.graph.create_node("Bug", properties)
+    return node_id
+
+
+@mcp.tool("graph_create_feature")
+def ims_graph_create_feature(
+    project_id: str,
+    description: str,
+    status: str = "planned",
+    priority: str = "medium",
+    requirements: Optional[List[str]] = None,
+    file_path: Optional[str] = None,
+    line_hint: Optional[int] = None,
+    external_id: Optional[str] = None,
+    external_system: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+) -> str:
+    """Create a Feature node in the ontology graph.
+    
+    Use this to track features/capabilities to be implemented.
+    
+    Args:
+        project_id: Project identifier
+        description: What to build (min 10 chars)
+        status: Feature lifecycle state (planned, in_progress, completed, cancelled)
+        priority: Implementation priority (low, medium, high, critical)
+        requirements: Functional requirements
+        file_path: Primary file to modify
+        line_hint: Where to start work
+        external_id: Link to external task (e.g., GitHub Issue)
+        external_system: External system type
+        tags: Categorization tags
+    
+    Returns:
+        The UUID of the created Feature node
+    
+    Example:
+        feature_id = ims_graph_create_feature(
+            project_id="my-app",
+            description="Add OAuth 2.0 authentication",
+            status="planned",
+            priority="high",
+            requirements=["Support Google OAuth", "Support GitHub OAuth"],
+            file_path="auth/oauth.py",
+            tags=["auth", "oauth"]
+        )
+    """
+    # Validate project_id
+    if not project_id or not isinstance(project_id, str):
+        raise ValueError("project_id must be a non-empty string")
+    if not project_id.strip():
+        raise ValueError("project_id cannot be empty or whitespace only")
+    
+    # Validate required field lengths
+    if len(description.strip()) < 10:
+        raise ValueError("description must be at least 10 characters")
+    
+    # Validate enum values
+    valid_statuses = ["planned", "in_progress", "completed", "cancelled"]
+    if status not in valid_statuses:
+        raise ValueError(f"status must be one of {valid_statuses}")
+    
+    valid_priorities = ["low", "medium", "high", "critical"]
+    if priority not in valid_priorities:
+        raise ValueError(f"priority must be one of {valid_priorities}")
+    
+    ims = _ims_client()
+    properties: Dict[str, Any] = {
+        "project_id": project_id,
+        "description": description,
+        "status": status,
+        "priority": priority,
+    }
+    if requirements:
+        properties["requirements"] = requirements
+    if file_path:
+        properties["file_path"] = file_path
+    if line_hint is not None:
+        properties["line_hint"] = line_hint
+    if external_id:
+        properties["external_id"] = external_id
+    if external_system:
+        properties["external_system"] = external_system
+    if tags:
+        properties["tags"] = tags
+    
+    node_id = ims.graph.create_node("Feature", properties)
+    return node_id
+
+
+@mcp.tool("graph_create_component")
+def ims_graph_create_component(
+    project_id: str,
+    name: str,
+    description: Optional[str] = None,
+    interface: Optional[str] = None,
+    responsibilities: Optional[List[str]] = None,
+    tags: Optional[List[str]] = None,
+) -> str:
+    """Create a Component node in the ontology graph.
+    
+    Use this to represent system components (services, modules, packages).
+    
+    Args:
+        project_id: Project identifier
+        name: Component identifier (alphanumeric + underscore/dash)
+        description: What it does
+        interface: Public API/contract
+        responsibilities: What it's responsible for
+        tags: Categorization tags
+    
+    Returns:
+        The UUID of the created Component node
+    
+    Example:
+        component_id = ims_graph_create_component(
+            project_id="my-app",
+            name="AuthService",
+            description="Handles user authentication and session management",
+            interface="POST /auth/login, POST /auth/logout, GET /auth/session",
+            responsibilities=["JWT token generation", "Session validation"],
+            tags=["service", "auth"]
+        )
+    """
+    # Validate project_id
+    if not project_id or not isinstance(project_id, str):
+        raise ValueError("project_id must be a non-empty string")
+    if not project_id.strip():
+        raise ValueError("project_id cannot be empty or whitespace only")
+    
+    # Validate name format (alphanumeric + underscore/dash)
+    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
+        raise ValueError("name must contain only alphanumeric characters, underscores, and dashes")
+    
+    ims = _ims_client()
+    properties: Dict[str, Any] = {
+        "project_id": project_id,
+        "name": name,
+    }
+    if description:
+        properties["description"] = description
+    if interface:
+        properties["interface"] = interface
+    if responsibilities:
+        properties["responsibilities"] = responsibilities
+    if tags:
+        properties["tags"] = tags
+    
+    node_id = ims.graph.create_node("Component", properties)
+    return node_id
+
+
+@mcp.tool("graph_create_relationship")
+def ims_graph_create_relationship(
+    from_id: str,
+    rel_type: str,
+    to_id: str,
+    properties: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Create a relationship between two nodes in the ontology graph.
+    
+    Use this to establish semantic links between entities.
+    
+    Args:
+        from_id: Source node UUID
+        rel_type: Relationship type (implements, blocks, affects, depends_on,
+                  supersedes, fixed_by, worked_on)
+        to_id: Target node UUID
+        properties: Optional relationship properties
+    
+    Returns:
+        True if relationship created successfully
+    
+    Relationship semantics:
+        - implements: Feature implements Decision
+        - blocks: Bug/Feature blocks Feature/Bug
+        - affects: Decision affects Component
+        - depends_on: Component/Feature depends on Component/Decision
+        - supersedes: Decision supersedes Decision (acyclic)
+        - fixed_by: Bug fixed by Decision
+        - worked_on: Session worked on Feature/Bug/Component
+    
+    Example:
+        # Link feature to decision
+        ims_graph_create_relationship(
+            from_id=feature_id,
+            rel_type="implements",
+            to_id=decision_id
+        )
+        
+        # Link bug to feature (blocking)
+        ims_graph_create_relationship(
+            from_id=bug_id,
+            rel_type="blocks",
+            to_id=feature_id
+        )
+    """
+    # Validate relationship type
+    valid_rel_types = [
+        "implements",
+        "blocks",
+        "affects",
+        "depends_on",
+        "supersedes",
+        "fixed_by",
+        "worked_on",
+    ]
+    if rel_type not in valid_rel_types:
+        raise ValueError(f"rel_type must be one of {valid_rel_types}")
+    
+    ims = _ims_client()
+    success = ims.graph.create_relationship(from_id, rel_type, to_id, properties)
+    return success
+
+
+# ---------------------------------------------------------------------------
+# Analysis Query Tools (Task 3.1)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool("graph_impact_analysis")
+def ims_graph_impact_analysis(
+    entity_id: str,
+    entity_type: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Analyze the impact of changing an entity.
+    
+    For Decisions: What components does this decision affect?
+    For Components: What's the downstream impact (who depends on this)?
+    
+    Args:
+        entity_id: Node UUID to analyze
+        entity_type: Type of entity ("Decision" or "Component")
+        project_id: Optional project filter
+    
+    Returns:
+        Dict with affected entities and relationship details
+    
+    Example:
+        # What components are affected by this decision?
+        impact = ims_graph_impact_analysis(
+            entity_id=decision_id,
+            entity_type="Decision"
+        )
+        # Returns: {"results": [{"component": "AuthService", "description": "..."}]}
+    """
+    # Validate entity_type
+    valid_types = ["Decision", "Component"]
+    if entity_type not in valid_types:
+        raise ValueError(f"entity_type must be one of {valid_types}")
+    
+    ims = _ims_client()
+    result = ims.graph.impact_analysis(entity_id, entity_type)
+    return result
+
+
+@mcp.tool("graph_blocking_analysis")
+def ims_graph_blocking_analysis(
+    feature_id: str,
+) -> Dict[str, Any]:
+    """Find what bugs are blocking a feature.
+    
+    Returns open bugs that must be fixed before feature can be completed.
+    
+    Args:
+        feature_id: Feature node UUID
+    
+    Returns:
+        Dict with blocking bugs, sorted by severity
+    
+    Example:
+        blockers = ims_graph_blocking_analysis(feature_id)
+        # Returns: {"results": [{"symptoms": "...", "severity": "high", "status": "open"}]}
+    """
+    ims = _ims_client()
+    result = ims.graph.blocking_analysis(feature_id)
+    return result
+
+
+@mcp.tool("graph_architectural_drift")
+def ims_graph_architectural_drift(
+    project_id: str,
+) -> Dict[str, Any]:
+    """Detect components following superseded decisions.
+    
+    Finds architectural drift where components follow old decisions that
+    have been superseded by newer ones.
+    
+    Args:
+        project_id: Project to analyze
+    
+    Returns:
+        Dict with drifted components and decision evolution
+    
+    Example:
+        drift = ims_graph_architectural_drift("my-app")
+        # Returns: {"results": [{"component": "SessionStore", 
+        #           "currently_follows": "File-based sessions",
+        #           "should_follow": "Redis sessions"}]}
+    """
+    ims = _ims_client()
+    result = ims.graph.architectural_drift(project_id)
+    return result
+
+
+@mcp.tool("graph_lookup_patterns")
+def ims_graph_lookup_patterns(
+    component_name: str,
+    domain: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Find patterns applicable to a component.
+    
+    Returns promoted patterns (from corrections) that apply to the component.
+    
+    Args:
+        component_name: Component to find patterns for
+        domain: Optional domain filter (e.g., "python", "auth")
+    
+    Returns:
+        Dict with applicable patterns and confidence scores
+    
+    Example:
+        patterns = ims_graph_lookup_patterns("AuthService", domain="auth")
+        # Returns: {"results": [{"description": "Always use rate limiting", 
+        #           "confidence": 1.0, "usage_count": 15}]}
+    """
+    ims = _ims_client()
+    result = ims.graph.lookup_patterns(component_name, domain)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Self-Improving Tools (Task 3.2)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool("graph_corrections_ready")
+def ims_graph_corrections_ready(
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Find corrections ready to be promoted to patterns.
+    
+    Corrections with 3+ uses that haven't been confirmed yet.
+    
+    Args:
+        project_id: Optional project filter
+    
+    Returns:
+        Dict with corrections ready for promotion
+    
+    Example:
+        ready = ims_graph_corrections_ready("my-app")
+        # Returns: {"results": [{"text": "Use strict mode", "usage_count": 5}]}
+    """
+    ims = _ims_client()
+    result = ims.graph.corrections_ready(project_id)
+    return result
+
+
+@mcp.tool("graph_promote_correction")
+def ims_graph_promote_correction(
+    correction_id: str,
+) -> Dict[str, Any]:
+    """Promote a correction to a pattern.
+    
+    Creates a Pattern node from the Correction and establishes BECOMES relationship.
+    
+    Args:
+        correction_id: Correction node UUID to promote
+    
+    Returns:
+        Dict with newly created Pattern node
+    
+    Example:
+        pattern = ims_graph_promote_correction(correction_id)
+        # Returns: {"pattern": {"description": "...", "confidence": 1.0}}
+    """
+    ims = _ims_client()
+    result = ims.graph.promote_correction(correction_id)
+    return result
 
 
 if __name__ == "__main__":
