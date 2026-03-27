@@ -389,6 +389,76 @@ def ims_open_sessions_snapshot_for_user(project_id: str, user_id: str) -> Dict[s
     }
 
 
+@mcp.resource(
+    "ims://graph/{project_id}/drift",
+    title="Architectural Drift Report",
+    description="Components following superseded decisions in a project.",
+    mime_type="application/json",
+)
+def ims_graph_drift_resource(project_id: str) -> Dict[str, Any]:
+    """Expose architectural drift analysis as a read-only resource."""
+    ims = _ims_client()
+    try:
+        result = ims.graph.architectural_drift(project_id)
+        return {
+            "generated_at": _utc_now_iso(),
+            "project_id": project_id,
+            "drift_analysis": result,
+        }
+    except Exception as exc:
+        return {
+            "generated_at": _utc_now_iso(),
+            "project_id": project_id,
+            "error": str(exc),
+        }
+
+
+@mcp.resource(
+    "ims://graph/corrections/ready",
+    title="Corrections Ready for Promotion",
+    description="Corrections with 3+ uses ready to become patterns.",
+    mime_type="application/json",
+)
+def ims_graph_corrections_ready_resource() -> Dict[str, Any]:
+    """Expose corrections ready for promotion as a read-only resource."""
+    ims = _ims_client()
+    try:
+        result = ims.graph.corrections_ready(project_id=None)
+        return {
+            "generated_at": _utc_now_iso(),
+            "corrections": result,
+        }
+    except Exception as exc:
+        return {
+            "generated_at": _utc_now_iso(),
+            "error": str(exc),
+        }
+
+
+@mcp.resource(
+    "ims://graph/{project_id}/corrections/ready",
+    title="Project Corrections Ready for Promotion",
+    description="Corrections ready to become patterns for a specific project.",
+    mime_type="application/json",
+)
+def ims_graph_project_corrections_ready_resource(project_id: str) -> Dict[str, Any]:
+    """Expose project-scoped corrections ready for promotion."""
+    ims = _ims_client()
+    try:
+        result = ims.graph.corrections_ready(project_id=project_id)
+        return {
+            "generated_at": _utc_now_iso(),
+            "project_id": project_id,
+            "corrections": result,
+        }
+    except Exception as exc:
+        return {
+            "generated_at": _utc_now_iso(),
+            "project_id": project_id,
+            "error": str(exc),
+        }
+
+
 # ---------------------------------------------------------------------------
 # ims.context-rag tools
 # ---------------------------------------------------------------------------

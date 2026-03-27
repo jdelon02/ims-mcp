@@ -157,6 +157,12 @@ The MCP server exposes the following tools for interacting with IMS capabilities
 - `ims.session-memory.resume_session`
   - Resume specific session by ID
 
+### Cross-Project Handoffs
+- `handoff_create`
+  - Create a cross-project handoff task
+  - Orchestrates: task-memory (GitHub Issue), memory-core (handoff note), session-memory (seed target session)
+  - Supports project registry integration for automatic GitHub repo resolution
+
 ### Graph Operations (Ontology)
 - `ims.graph.create_node`
   - Create ontology nodes (Decision, Bug, Feature, Component, Correction, Reflection, Pattern, Lesson)
@@ -269,6 +275,14 @@ The MCP server also exposes read-only resources for inspection/discovery:
   - Snapshot of open sessions for a project, using inferred user context from the backend.
 - `ims://sessions/{project_id}/{user_id}/open`
   - Snapshot of open sessions for an explicit project and user.
+
+### Graph ontology snapshots
+- `ims://graph/{project_id}/drift`
+  - Architectural drift report showing components following superseded decisions.
+- `ims://graph/corrections/ready`
+  - Global snapshot of corrections ready for promotion (3+ uses, not yet confirmed).
+- `ims://graph/{project_id}/corrections/ready`
+  - Project-scoped corrections ready for promotion to patterns.
 
 ## IMS backend changes (context-rag) to take advantage of new docs semantics
 
