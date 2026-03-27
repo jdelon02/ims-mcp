@@ -1686,6 +1686,284 @@ def ims_graph_create_component(
     return node_id
 
 
+@mcp.tool("graph_create_correction")
+def ims_graph_create_correction(
+    text: str,
+    context: str,
+    scope: str,
+    project_id: Optional[str] = None,
+    domain: Optional[str] = None,
+    confirmed: bool = False,
+    tags: Optional[List[str]] = None,
+) -> str:
+    """Create a Correction node for user corrections of agent behavior.
+    
+    Use this to log user corrections that may become patterns after 3+ uses.
+    
+    Args:
+        text: What was corrected (min 10 chars)
+        context: Where/when it happened (min 10 chars)
+        scope: Scope of correction ("global", "domain", or "project")
+        project_id: Required if scope="project"
+        domain: Required if scope="domain" (e.g., "python", "auth")
+        confirmed: User explicitly confirmed this correction
+        tags: Categorization tags
+    
+    Returns:
+        The UUID of the created Correction node
+    
+    Example:
+        correction_id = ims_graph_create_correction(
+            text="Use TypeScript strict mode always",
+            context="TypeScript configuration",
+            scope="global",
+            confirmed=True,
+            tags=["typescript", "config"]
+        )
+    """
+    # Validate scope-specific requirements
+    if scope not in ["global", "domain", "project"]:
+        raise ValueError("scope must be one of: global, domain, project")
+    if scope == "project" and not project_id:
+        raise ValueError("project_id required when scope='project'")
+    if scope == "domain" and not domain:
+        raise ValueError("domain required when scope='domain'")
+    
+    # Validate text and context lengths
+    if len(text.strip()) < 10:
+        raise ValueError("text must be at least 10 characters")
+    if len(context.strip()) < 10:
+        raise ValueError("context must be at least 10 characters")
+    
+    ims = _ims_client()
+    properties: Dict[str, Any] = {
+        "text": text,
+        "context": context,
+        "scope": scope,
+        "confirmed": confirmed,
+        "usage_count": 1,  # Backend requires >= 1
+    }
+    if project_id:
+        properties["project_id"] = project_id
+    if domain:
+        properties["domain"] = domain
+    if tags:
+        properties["tags"] = tags
+    
+    node_id = ims.graph.create_node("Correction", properties)
+    return node_id
+
+
+@mcp.tool("graph_create_reflection")
+def ims_graph_create_reflection(
+    task_type: str,
+    lesson: str,
+    what_i_did: str,
+    reflection: str,
+    outcome: str = "success",
+    status: str = "candidate",
+    project_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+) -> str:
+    """Create a Reflection node for agent self-evaluation.
+    
+    Use this after completing work to record what was learned.
+    
+    Args:
+        task_type: Type of task (e.g., "implement_feature", "fix_bug")
+        lesson: What to do differently next time (min 20 chars)
+        what_i_did: Brief description of what was done (required)
+        reflection: What agent noticed during execution (required)
+        outcome: How it went ("success", "partial", or "failed")
+        status: Promotion status ("candidate", "promoted", or "archived")
+        project_id: Project this reflection belongs to
+        session_id: Related session UUID
+        tags: Categorization tags
+    
+    Returns:
+        The UUID of the created Reflection node
+    
+    Example:
+        reflection_id = ims_graph_create_reflection(
+            task_type="implement_auth_feature",
+            lesson="Rate limiting should be implemented before deploying authentication features to production",
+            what_i_did="Implemented OAuth2 flow with Redis session storage and JWT tokens",
+            reflection="Initially forgot to add rate limiting middleware, had to revise implementation after security review",
+            outcome="success",
+            project_id="my-app",
+            tags=["reflection", "auth", "security", "rate-limiting"],
+        )
+    """
+    # Validate outcome and status
+    valid_outcomes = ["success", "partial", "failed"]
+    if outcome not in valid_outcomes:
+        raise ValueError(f"outcome must be one of {valid_outcomes}")
+    
+    valid_statuses = ["candidate", "promoted", "archived"]
+    if status not in valid_statuses:
+        raise ValueError(f"status must be one of {valid_statuses}")
+    
+    # Validate lesson length
+    if len(lesson.strip()) < 20:
+        raise ValueError("lesson must be at least 20 characters")
+    
+    ims = _ims_client()
+    properties: Dict[str, Any] = {
+        "task_type": task_type,
+        "lesson": lesson,
+        "what_i_did": what_i_did,
+        "reflection": reflection,
+        "outcome": outcome,
+        "status": status,
+    }
+    if project_id:
+        properties["project_id"] = project_id
+    if session_id:
+        properties["session_id"] = session_id
+    if tags:
+        properties["tags"] = tags
+    
+    node_id = ims.graph.create_node("Reflection", properties)
+    return node_id
+
+
+@mcp.tool("graph_create_pattern")
+def ims_graph_create_pattern(
+    description: str,
+    scope: str,
+    confidence: float = 1.0,
+    project_id: Optional[str] = None,
+    domain: Optional[str] = None,
+    created_from: Optional[List[str]] = None,
+    tags: Optional[List[str]] = None,
+) -> str:
+    """Create a Pattern node for confirmed behavioral patterns.
+    
+    Typically created via graph_promote_correction, but can be created directly
+    for manually identified patterns.
+    
+    Args:
+        description: The pattern/rule (min 10 chars)
+        scope: Pattern scope ("global", "domain", or "project")
+        confidence: Confidence level 0.0-1.0
+        project_id: Required if scope="project"
+        domain: Required if scope="domain"
+        created_from: Correction UUIDs that led to this pattern
+        tags: Categorization tags
+    
+    Returns:
+        The UUID of the created Pattern node
+    
+    Example:
+        pattern_id = ims_graph_create_pattern(
+            description="Always enable TypeScript strict mode in tsconfig.json",
+            scope="global",
+            confidence=1.0,
+            created_from=["correction-uuid-1", "correction-uuid-2"],
+            tags=["pattern", "typescript", "config"]
+        )
+    """
+    # Validate scope-specific requirements
+    if scope not in ["global", "domain", "project"]:
+        raise ValueError("scope must be one of: global, domain, project")
+    if scope == "project" and not project_id:
+        raise ValueError("project_id required when scope='project'")
+    if scope == "domain" and not domain:
+        raise ValueError("domain required when scope='domain'")
+    
+    # Validate description length
+    if len(description.strip()) < 10:
+        raise ValueError("description must be at least 10 characters")
+    
+    # Validate confidence range
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError("confidence must be between 0.0 and 1.0")
+    
+    ims = _ims_client()
+    properties: Dict[str, Any] = {
+        "description": description,
+        "scope": scope,
+        "confidence": confidence,
+        "usage_count": 3,  # Backend requires >= 3 for patterns
+    }
+    if project_id:
+        properties["project_id"] = project_id
+    if domain:
+        properties["domain"] = domain
+    if created_from:
+        properties["created_from"] = created_from
+    if tags:
+        properties["tags"] = tags
+    
+    node_id = ims.graph.create_node("Pattern", properties)
+    return node_id
+
+
+@mcp.tool("graph_create_lesson")
+def ims_graph_create_lesson(
+    text: str,
+    context: str,
+    category: Optional[str] = None,
+    applies_to: Optional[List[str]] = None,
+    verified: bool = False,
+    project_id: Optional[str] = None,
+    reflection_id: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+) -> str:
+    """Create a Lesson node for improvements learned from reflections.
+    
+    Use this to capture actionable lessons that improve future work.
+    
+    Args:
+        text: The lesson learned (min 20 chars)
+        context: Where this lesson applies (required)
+        category: Type of lesson (e.g., "testing", "security", "architecture")
+        applies_to: Node UUIDs this lesson applies to
+        verified: Lesson has been verified through application
+        project_id: Project this lesson belongs to
+        reflection_id: Reflection UUID this lesson came from
+        tags: Categorization tags
+    
+    Returns:
+        The UUID of the created Lesson node
+    
+    Example:
+        lesson_id = ims_graph_create_lesson(
+            text="Add rate limiting to all authentication endpoints before deployment",
+            context="Authentication endpoint implementation",
+            category="security",
+            verified=True,
+            project_id="my-app",
+            reflection_id="reflection-uuid",
+            tags=["lesson", "auth", "security"]
+        )
+    """
+    # Validate text length
+    if len(text.strip()) < 20:
+        raise ValueError("text must be at least 20 characters")
+    
+    ims = _ims_client()
+    properties: Dict[str, Any] = {
+        "text": text,
+        "context": context,
+        "verified": verified,
+    }
+    if category:
+        properties["category"] = category
+    if applies_to:
+        properties["applies_to"] = applies_to
+    if project_id:
+        properties["project_id"] = project_id
+    if reflection_id:
+        properties["reflection_id"] = reflection_id
+    if tags:
+        properties["tags"] = tags
+    
+    node_id = ims.graph.create_node("Lesson", properties)
+    return node_id
+
+
 @mcp.tool("graph_create_relationship")
 def ims_graph_create_relationship(
     from_id: str,
