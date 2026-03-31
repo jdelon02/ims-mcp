@@ -84,7 +84,7 @@ _load_env_from_file()
 # IMS client wiring
 # ---------------------------------------------------------------------------
 
-from app.ims_client import IMSClient
+from app.ims_client import IMSClient, MAX_MEMORY_TEXT_LENGTH
 
 
 def _ims_client() -> IMSClient:
@@ -629,7 +629,7 @@ def ims_store_memory(
 
     Args:
         project_id: Project identifier
-        text: Memory content - be clear and specific
+        text: Memory content - be clear and specific (max 10000 chars)
         kind: Memory type. Use:
               - "decision": Architecture, data model, tooling choices
                            (auto-creates Decision graph node)
@@ -642,6 +642,9 @@ def ims_store_memory(
 
     Returns:
         Dict with stored memory metadata including memory_id
+    
+    Raises:
+        ValueError: If text exceeds MAX_MEMORY_TEXT_LENGTH (10000 chars)
     
     Behavior:
         - kind="decision" → creates memory in Postgres + embedding in Qdrant + Decision node in Neo4j
@@ -667,6 +670,15 @@ def ims_store_memory(
     """
     # Enforce active session requirement
     _check_active_session(project_id)
+    
+    # Validate text length early for better error messages
+    text_len = len(text)
+    if text_len > MAX_MEMORY_TEXT_LENGTH:
+        raise ValueError(
+            f"Memory text too long ({text_len} chars). "
+            f"Maximum allowed: {MAX_MEMORY_TEXT_LENGTH} chars. "
+            f"Please summarize or split into multiple memories."
+        )
     
     ims = _ims_client()
     return ims.memory_core.store_memory(

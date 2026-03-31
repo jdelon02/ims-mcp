@@ -24,6 +24,9 @@ import httpx
 
 from app.graph_client import GraphClient
 
+# Maximum allowed length for memory text to prevent embedding timeouts
+MAX_MEMORY_TEXT_LENGTH = 10000
+
 
 def _raise_for_status_with_body(resp: httpx.Response) -> None:
     """Raise for HTTP errors but include the response body in the exception.
@@ -130,7 +133,17 @@ class MemoryCoreClient(_BaseClient):
         """Store a new memory via `/memories/store`.
 
         Returns the parsed JSON response (a MemoryOut dict).
+        
+        Raises:
+            ValueError: If text exceeds MAX_MEMORY_TEXT_LENGTH (10000 chars)
         """
+        # Validate text length before sending to backend
+        text_len = len(text)
+        if text_len > MAX_MEMORY_TEXT_LENGTH:
+            raise ValueError(
+                f"Memory text too long ({text_len} chars). "
+                f"Maximum allowed: {MAX_MEMORY_TEXT_LENGTH} chars"
+            )
 
         pid = project_id or _default_project_id()
         payload: Dict[str, Any] = {
